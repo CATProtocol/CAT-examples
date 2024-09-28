@@ -1,0 +1,14 @@
+node_modules/
+dist/
+out/
+artifacts/
+!logs/.keep
+**/.env
+**/scrypt.index.json
+tsconfig-scryptTS.json
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/settings.json
+.eslintcache
+.DS_Store
