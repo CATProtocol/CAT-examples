@@ -21,36 +21,43 @@ import {
 import { StateUtils, TxoStateHashes } from '@cat-protocol/cat-smartcontracts'
 import { CAT20Proto } from '@cat-protocol/cat-smartcontracts'
 import { SellUtil, SpentAmountsCtx } from './sellUtil'
+import { OpMul } from 'scrypt-ts-lib-btc'
 
 export class BuyCAT20 extends SmartContract {
     @prop()
     cat20Script: ByteString
 
     @prop()
-    recvOutput: ByteString
+    buyerAddress: ByteString
 
     @prop()
-    buyerAddress: ByteString
+    price: int32
+
+    @prop()
+    scalePrice: boolean
 
     constructor(
         cat20Script: ByteString,
-        recvOutput: ByteString,
-        buyerAddress: ByteString
+        buyerAddress: ByteString,
+        price: int32,
+        scalePrice: boolean
     ) {
         super(...arguments)
         this.cat20Script = cat20Script
-        this.recvOutput = recvOutput
         this.buyerAddress = buyerAddress
+        this.price = price
+        this.scalePrice = scalePrice
     }
 
     @method()
     public take(
         curTxoStateHashes: TxoStateHashes,
-        preRemainingSatoshis: int32,
+        preRemainingAmount: int32,
         toBuyerAmount: int32,
         toSellerAmount: int32,
-        buyUserAddress: PubKeyHash,
+        toSellerAddress: PubKeyHash,
         tokenSatoshiBytes: ByteString,
+        tokenInputIndex: int32,
         // sig data
         cancel: boolean,
         pubKeyPrefix: ByteString,
@@ -61,6 +68,7 @@ export class BuyCAT20 extends SmartContract {
         prevoutsCtx: PrevoutsCtx,
         spentScriptsCtx: SpentScriptsCtx,
         spentAmountsCtx: SpentAmountsCtx,
+        serviceFeeInfo: ChangeInfo,
         changeInfo: ChangeInfo
     ) {
         // check preimage
@@ -76,6 +84,7 @@ export class BuyCAT20 extends SmartContract {
                 ),
                 'preimage check error'
             )
+            assert(prevoutsCtx.inputIndexVal == 0n)
             // check ctx
             SigHashUtils.checkPrevoutsCtx(
                 prevoutsCtx,
@@ -86,18 +95,40 @@ export class BuyCAT20 extends SmartContract {
                 spentScriptsCtx,
                 shPreimage.hashSpentScripts
             )
+
+            assert(
+                spentScriptsCtx[Number(tokenInputIndex)] == this.cat20Script,
+                'should spend the cat20Script'
+            )
             SellUtil.checkSpentAmountsCtx(
                 spentAmountsCtx,
                 shPreimage.hashSpentAmounts
             )
-            assert(toSellerAmount >= 0n)
-            assert(preRemainingSatoshis >= toBuyerAmount)
+            assert(toSellerAmount >= 0n, 'Invalid to seller amount')
+
+            const preRemainingSatoshis = OpMul.mul(
+                this.price,
+                preRemainingAmount
+            )
+            assert(
+                spentAmountsCtx[Number(prevoutsCtx.inputIndexVal)] ==
+                    SellUtil.int32ToSatoshiBytes(
+                        preRemainingSatoshis,
+                        this.scalePrice
+                    ),
+                'Invalid preRemainingSatoshis'
+            )
+
+            assert(
+                preRemainingAmount >= toBuyerAmount,
+                'Insufficient satoshis balance'
+            )
 
             // to buyer
             let curStateHashes: ByteString = hash160(
                 CAT20Proto.stateHash({
                     amount: toBuyerAmount,
-                    ownerAddr: buyUserAddress,
+                    ownerAddr: this.buyerAddress,
                 })
             )
             const toBuyerTokenOutput = TxUtil.buildOutput(
@@ -108,13 +139,10 @@ export class BuyCAT20 extends SmartContract {
             // sell token change
             let toSellerTokenOutput = toByteString('')
             if (toSellerAmount > 0n) {
-                const contractAddress = hash160(
-                    spentScriptsCtx[Number(prevoutsCtx.inputIndexVal)]
-                )
                 curStateHashes += hash160(
                     CAT20Proto.stateHash({
                         amount: toSellerAmount,
-                        ownerAddr: contractAddress,
+                        ownerAddr: toSellerAddress,
                     })
                 )
                 toSellerTokenOutput = TxUtil.buildOutput(
@@ -124,14 +152,20 @@ export class BuyCAT20 extends SmartContract {
             }
 
             // remaining buyer utxo satoshi
-            const remainingSatoshis = preRemainingSatoshis - toBuyerAmount
-            assert(remainingSatoshis >= 0n)
+            const remainingSatoshis = OpMul.mul(
+                this.price,
+                preRemainingAmount - toBuyerAmount
+            )
             let remainingOutput = toByteString('')
             if (remainingSatoshis > 0n) {
+                const selfSpentScript =
+                    spentScriptsCtx[Number(prevoutsCtx.inputIndexVal)]
                 remainingOutput = TxUtil.buildOutput(
-                    this.recvOutput,
-                    // token 1 decimals = 1 satoshi
-                    SellUtil.int32ToSatoshiBytes(remainingSatoshis)
+                    selfSpentScript,
+                    SellUtil.int32ToSatoshiBytes(
+                        remainingSatoshis,
+                        this.scalePrice
+                    )
                 )
             }
 
@@ -142,12 +176,14 @@ export class BuyCAT20 extends SmartContract {
                 curStateCnt,
                 curTxoStateHashes
             )
+            const feeOutput = TxUtil.getChangeOutput(serviceFeeInfo)
             const changeOutput = TxUtil.getChangeOutput(changeInfo)
             const hashOutputs = sha256(
                 stateOutput +
                     toBuyerTokenOutput +
                     toSellerTokenOutput +
                     remainingOutput +
+                    feeOutput +
                     changeOutput
             )
             assert(
