@@ -21,6 +21,7 @@ import {
 import { StateUtils, TxoStateHashes } from '@cat-protocol/cat-smartcontracts'
 import { CAT20Proto } from '@cat-protocol/cat-smartcontracts'
 import { SellUtil } from './sellUtil'
+import { OpMul } from 'scrypt-ts-lib-btc'
 
 export class CAT20Sell extends SmartContract {
     @prop()
@@ -32,15 +33,25 @@ export class CAT20Sell extends SmartContract {
     @prop()
     sellerAddress: ByteString
 
+    @prop()
+    price: int32
+
+    @prop()
+    scalePrice: boolean
+
     constructor(
         cat20Script: ByteString,
         recvOutput: ByteString,
-        sellerAddress: ByteString
+        sellerAddress: ByteString,
+        price: int32,
+        scalePrice: boolean
     ) {
         super(...arguments)
         this.cat20Script = cat20Script
         this.recvOutput = recvOutput
         this.sellerAddress = sellerAddress
+        this.price = price
+        this.scalePrice = scalePrice
     }
 
     @method()
@@ -60,6 +71,7 @@ export class CAT20Sell extends SmartContract {
         shPreimage: SHPreimage,
         prevoutsCtx: PrevoutsCtx,
         spentScriptsCtx: SpentScriptsCtx,
+        serviceFeeInfo: ChangeInfo,
         changeInfo: ChangeInfo
     ) {
         // check preimage
@@ -121,10 +133,11 @@ export class CAT20Sell extends SmartContract {
             }
 
             // satoshi to seller
+            const satoshiToSeller = OpMul.mul(this.price, toBuyUserAmount)
             const toSellerOutput = TxUtil.buildOutput(
                 this.recvOutput,
                 // token 1 decimals = 1 satoshi
-                SellUtil.int32ToSatoshiBytes(toBuyUserAmount)
+                SellUtil.int32ToSatoshiBytes(satoshiToSeller, this.scalePrice)
             )
 
             //
@@ -134,12 +147,14 @@ export class CAT20Sell extends SmartContract {
                 curStateCnt,
                 curTxoStateHashes
             )
+            const feeOutput = TxUtil.getChangeOutput(serviceFeeInfo)
             const changeOutput = TxUtil.getChangeOutput(changeInfo)
             const hashOutputs = sha256(
                 stateOutput +
                     toBuyerTokenOutput +
                     changeToSellTokenOutput +
                     toSellerOutput +
+                    feeOutput +
                     changeOutput
             )
             assert(

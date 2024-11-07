@@ -134,12 +134,13 @@ export async function guardDeloy(
 export async function deployNoStateContract(
     feeUtxo,
     seckey,
-    contractInfo: TaprootSmartContract
+    contractInfo: TaprootSmartContract,
+    satoshis?: number
 ) {
     const catTx = CatTx.create()
     catTx.tx.from(feeUtxo)
     const locking = contractInfo.lockingScript
-    const atIndex = catTx.addContractOutput(locking)
+    const atIndex = catTx.addContractOutput(locking, satoshis)
     catTx.sign(seckey)
     return {
         catTx: catTx,
@@ -147,5 +148,36 @@ export async function deployNoStateContract(
         state: null,
         contractTaproot: contractInfo,
         atOutputIndex: atIndex,
+    }
+}
+
+export async function deployGuardAndNoState(
+    feeUtxo,
+    seckey,
+    guardState: GuardConstState,
+    guardInfo: TaprootMastSmartContract,
+    noStateInfo: TaprootSmartContract,
+    noStateSatoshi?: number
+) {
+    const catTx = CatTx.create()
+    catTx.tx.from(feeUtxo)
+    const atIndex = catTx.addStateContractOutput(
+        guardInfo.lockingScript,
+        GuardProto.toByteString(guardState)
+    )
+    const noStateAtIndex = catTx.addContractOutput(
+        noStateInfo.lockingScript,
+        noStateSatoshi
+    )
+    catTx.sign(seckey)
+    return {
+        catTx: catTx,
+        contract: guardInfo.contractTaprootMap.transfer.contract,
+        state: guardState,
+        contractTaproot: guardInfo.contractTaprootMap.transfer,
+        atOutputIndex: atIndex,
+        noStateContract: noStateInfo.contract,
+        noStateContractTaproot: noStateInfo,
+        noStateAtOutputIndex: noStateAtIndex,
     }
 }
