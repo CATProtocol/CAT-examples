@@ -11,7 +11,7 @@
     "build": "tsc",
     "deploy": "npx ts-node ./deploy.ts",
     "clean": "rimraf scrypt.index.json && rimraf dist && rimraf artifacts",
-    "compile": "npx scrypt-cli compile --asm && npx ts-node ./postCompile.ts",
+    "compile": "npx scrypt-cli compile",
     "pretest": "npm run build",
     "test": "npm run test:mocha",
     "test:mocha": "mocha",
@@ -29,7 +29,8 @@
     ]
   },
   "dependencies": {
-    "@cat-protocol/cat-smartcontracts": "^0.2.7",
+    "@cat-protocol/cat-sdk": "^1.0.4",
+    "@mempool/mempool.js": "^2.3.0",
     "bigi": "^1.4.2",
     "bitcore-lib-inquisition": "^10.0.30",
     "dotenv": "^16.0.3",
@@ -38,7 +39,7 @@
     "js-sha256": "^0.9.0",
     "scrypt-ts": "latest",
     "scrypt-ts-lib-btc": "^0.1.0",
-    "varuint-bitcoin": "=1.1.2"
+    "varuint-bitcoin": "^2.0.0"
   },
   "devDependencies": {
     "@cmdcode/buff": "^2.2.4",
