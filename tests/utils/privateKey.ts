@@ -27,7 +27,7 @@ export function getPrivKey() {
 }
 
 export function getKeyInfoFromWif(wif: string): KeyInfo {
-    const seckey = new btc.PrivateKey(wif, btc.Networks.testnet)
+    const seckey = new btc.PrivateKey(wif)
     const pubkey = seckey.toPublicKey()
     const addrP2WPKH = seckey.toAddress(
         null,
