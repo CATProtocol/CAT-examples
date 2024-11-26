@@ -31,9 +31,16 @@ const main = async function () {
     const chainProvider = new MempolChainProvider('fractal-testnet')
     const signer = new DefaultSigner(ECPair.fromWIF(wif), AddressType.P2TR)
     const address = await signer.getAddress()
+    const cat721Utxos = await getCollectionAddressUtxos(collectionId, address)
+    if (cat721Utxos.length == 0) {
+        console.log(
+            `This address(${address}) does not own any NFTs from this collection(${collectionId}), \
+            modify the variable collectionId to match the collection of the NFTs held by this address.`
+        )
+        return
+    }
     const collectionInfo = await getCollectionInfo(collectionId)
     const cat721Covenant = new CAT721Covenant(collectionInfo.minterAddr)
-    const cat721Utxos = await getCollectionAddressUtxos(collectionId, address)
     const sell721Utxo = cat721Utxos[0]
     const cat721Price = 10000n
     const feeRate = 3
