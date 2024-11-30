@@ -16,7 +16,7 @@ import {
     isP2TR,
     pickLargeFeeUtxo,
 } from '@cat-protocol/cat-sdk'
-import { CAT721SellCovenant } from '../../../covenants/cat721SellCovenant'
+import { CAT721SellCovenant } from '../../../covenants/cat721/cat721SellCovenant'
 import { Ripemd160, UTXO } from 'scrypt-ts'
 import { Psbt } from 'bitcoinjs-lib'
 

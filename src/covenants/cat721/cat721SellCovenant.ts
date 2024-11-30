@@ -12,7 +12,7 @@ import {
     toXOnly,
 } from '@cat-protocol/cat-sdk'
 import { CAT721Covenant } from '@cat-protocol/cat-sdk'
-import { CAT721Sell } from '../contracts/cat721/cat721Sell'
+import { CAT721Sell } from '../../contracts/cat721/cat721Sell'
 import {
     ByteString,
     FixedArray,

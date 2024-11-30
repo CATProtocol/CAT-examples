@@ -7,7 +7,7 @@ import {
     btc,
     singleSendNft,
 } from '@cat-protocol/cat-sdk'
-import { CAT721SellCovenant } from '../../../covenants/cat721SellCovenant'
+import { CAT721SellCovenant } from '../../../covenants/cat721/cat721SellCovenant'
 import { CAT721Covenant } from '@cat-protocol/cat-sdk'
 import { hash160 } from 'scrypt-ts'
 import { CAT721Sell } from '../../../contracts/cat721/cat721Sell'
