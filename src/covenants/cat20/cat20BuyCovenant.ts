@@ -121,8 +121,15 @@ export class CAT20BuyCovenant extends Covenant {
                     8n
                 )
             }
+            const subContract = this.getSubContract() as CAT20Buy
+            let preRemainingAmount =
+                curPsbt.data.inputs[inputIndex].witnessUtxo.value /
+                subContract.price
+            if (subContract.scalePrice) {
+                preRemainingAmount = preRemainingAmount / 256n
+            }
             args.push(curPsbt.txState.stateHashList) //curTxoStateHashes
-            args.push(BigInt(curPsbt.data.inputs[inputIndex].witnessUtxo.value)) // preRemainingAmount
+            args.push(preRemainingAmount) // preRemainingAmount
             args.push(toBuyerAmount) // toBuyerAmount
             args.push(toSellerAmount) // toSellerAmount
             args.push(toSellerAddress) // toSellerAddress
