@@ -2,7 +2,7 @@ import * as dotenv from 'dotenv'
 dotenv.config()
 import { expect, use } from 'chai'
 import chaiAsPromised from 'chai-as-promised'
-import { Ripemd160, int2ByteString } from 'scrypt-ts'
+import { Ripemd160 } from 'scrypt-ts'
 import {
     CAT20Covenant,
     CAT20Proto,
