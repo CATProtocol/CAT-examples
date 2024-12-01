@@ -20,31 +20,30 @@ import {
     pickLargeFeeUtxo,
     toTokenAddress,
 } from '@cat-protocol/cat-sdk'
-import { CAT20SellCovenant } from '../../../covenants/cat20/cat20SellCovenant'
-import { Ripemd160, UTXO, byteString2Int, hash160 } from 'scrypt-ts'
+import { CAT20BuyCovenant } from '../../../covenants/cat20/cat20BuyCovenant'
+import { Ripemd160, UTXO, byteString2Int } from 'scrypt-ts'
 import { Psbt } from 'bitcoinjs-lib'
-import { CAT20Sell } from '../../../contracts/cat20/cat20Sell'
+import { CAT20Buy } from '../../../contracts/cat20/cat20Buy'
 
 /**
- * take a CAT20 sell order
+ * take a CAT20 buy order
  * @param signer a signer, such as {@link DefaultSigner} or {@link UnisatSigner}
  * @param cat20Covenant a {@link CAT20Covenant}
- * @param cat20SellCovenant a {@link CAT20SellCovenant}
+ * @param cat20BuyCovenant a {@link CAT20BuyCovenant}
  * @param utxoProvider a {@link UtxoProvider}
  * @param chainProvider a {@link ChainProvider}
- * @param sellTokenUtxo cat20 token utxo
  * @param toBuyUserAmount buy cat20 token amount
  * @param serviceFeeInfo service fee
  * @param feeRate specify the fee rate for constructing transactions
  * @returns returns all transactions
  */
-export async function takeCAT20SellOrder(
+export async function takeCAT20BuyOrder(
     signer: Signer,
     cat20Covenant: CAT20Covenant,
-    cat20SellCovenant: CAT20SellCovenant,
+    inputTokenUtxos: Cat20Utxo[],
+    cat20BuyCovenant: CAT20BuyCovenant,
     utxoProvider: UtxoProvider,
     chainProvider: ChainProvider,
-    sellTokenUtxo: Cat20Utxo,
     toBuyUserAmount: int32,
     serviceFeeInfo: ChangeInfo,
     feeRate: number
@@ -52,7 +51,6 @@ export async function takeCAT20SellOrder(
     const pubkey = await signer.getPublicKey()
     const address = await signer.getAddress()
     const changeAddress = await signer.getAddress()
-    const inputTokenUtxos = [sellTokenUtxo]
     const tracableTokens = await CAT20Covenant.backtrace(
         inputTokenUtxos.map((utxo) => {
             return { ...utxo, minterAddr: cat20Covenant.minterAddr }
@@ -60,21 +58,32 @@ export async function takeCAT20SellOrder(
         chainProvider
     )
     const inputTokens = tracableTokens.map((token) => token.token)
+    const subContract = cat20BuyCovenant.getSubContract() as CAT20Buy
+    let buyAmountSatoshi = toBuyUserAmount * subContract.price
+    if (subContract.scalePrice) {
+        buyAmountSatoshi = buyAmountSatoshi * 256n
+    }
+    const remainingSatoshi =
+        BigInt(cat20BuyCovenant.utxo.satoshis) - buyAmountSatoshi
+    const totalCat20Input = inputTokenUtxos.reduce((c, value) => {
+        return c + value.state.amount
+    }, 0n)
+    const tokenChange = totalCat20Input - toBuyUserAmount
     const receivers: {
         address: Ripemd160
         amount: int32
         outputIndex: number
-    }[] = []
-    const sellChange = sellTokenUtxo.state.amount - toBuyUserAmount
-    receivers.push({
-        address: toTokenAddress(address),
-        amount: toBuyUserAmount,
-        outputIndex: 1,
-    })
-    if (sellChange > 0n) {
+    }[] = [
+        {
+            address: Ripemd160(subContract.buyerAddress),
+            amount: toBuyUserAmount,
+            outputIndex: 1,
+        },
+    ]
+    if (tokenChange > 0n) {
         receivers.push({
-            address: hash160(cat20SellCovenant.lockingScriptHex),
-            amount: sellChange,
+            address: toTokenAddress(address),
+            amount: tokenChange,
             outputIndex: 2,
         })
     }
@@ -87,23 +96,20 @@ export async function takeCAT20SellOrder(
     )
     const { estGuardTxVSize, dummyGuardPsbt } = estimateGuardTxVSize(
         guard.bindToUtxo({ ...getDummyUtxo(changeAddress), script: undefined }),
-        cat20SellCovenant.bindToUtxo({
-            ...getDummyUtxo(changeAddress),
-            script: undefined,
-        }),
         changeAddress
     )
 
     const estSendTxVSize = estimateSentTxVSize(
         tracableTokens,
         guard,
-        cat20SellCovenant,
+        cat20BuyCovenant,
         dummyGuardPsbt,
         address,
         pubkey,
         outputTokens,
         toBuyUserAmount,
-        sellChange,
+        tokenChange,
+        remainingSatoshi,
         changeAddress,
         feeRate,
         serviceFeeInfo
@@ -121,7 +127,6 @@ export async function takeCAT20SellOrder(
 
     const guardPsbt = buildGuardTx(
         guard,
-        cat20SellCovenant,
         [feeUtxo],
         changeAddress,
         feeRate,
@@ -131,13 +136,14 @@ export async function takeCAT20SellOrder(
     const sendPsbt = buildSendTx(
         tracableTokens,
         guard,
-        cat20SellCovenant,
+        cat20BuyCovenant,
         guardPsbt,
         address,
         pubkey,
         outputTokens,
         toBuyUserAmount,
-        sellChange,
+        tokenChange,
+        remainingSatoshi,
         changeAddress,
         feeRate,
         serviceFeeInfo,
@@ -172,7 +178,6 @@ export async function takeCAT20SellOrder(
 
 function buildGuardTx(
     guard: Cat20GuardCovenant,
-    cat20Sell: CAT20SellCovenant,
     feeUtxos: UTXO[],
     changeAddress: string,
     feeRate: number,
@@ -194,7 +199,6 @@ function buildGuardTx(
     const guardTx = new CatPsbt()
         .addFeeInputs(feeUtxos)
         .addCovenantOutput(guard, Postage.GUARD_POSTAGE)
-        .addCovenantOutput(cat20Sell, Postage.TOKEN_POSTAGE)
         .change(changeAddress, feeRate, estimatedVSize)
 
     guard.bindToUtxo(guardTx.getUtxo(1))
@@ -204,12 +208,10 @@ function buildGuardTx(
 
 function estimateGuardTxVSize(
     guard: Cat20GuardCovenant,
-    cat20Sell: CAT20SellCovenant,
     changeAddress: string
 ) {
     const dummyGuardPsbt = buildGuardTx(
         guard,
-        cat20Sell,
         getDummyUtxos(changeAddress, 1),
         changeAddress,
         DUST_LIMIT
@@ -223,13 +225,14 @@ function estimateGuardTxVSize(
 function buildSendTx(
     tracableTokens: TracedCat20Token[],
     guard: Cat20GuardCovenant,
-    cat20Sell: CAT20SellCovenant,
+    cat20Buy: CAT20BuyCovenant,
     guardPsbt: CatPsbt,
     address: string,
     pubKey: string,
     outputTokens: (CAT20Covenant | undefined)[],
     toBuyUserAmount: int32,
-    sellChange: int32,
+    toSellerAmount: int32,
+    remainingSatoshi: int32,
     changeAddress: string,
     feeRate: number,
     serviceFeeInfo: ChangeInfo,
@@ -251,24 +254,19 @@ function buildSendTx(
             sendPsbt.addCovenantOutput(outputToken, Postage.TOKEN_POSTAGE)
         }
     }
-    cat20Sell.bindToUtxo(guardPsbt.getUtxo(2))
-    sendPsbt.addCovenantInput(cat20Sell)
+    // cat20Buy
+    sendPsbt.addCovenantInput(cat20Buy)
     // add token inputs
     for (const inputToken of inputTokens) {
         sendPsbt.addCovenantInput(inputToken)
     }
-    const subContract = cat20Sell.getSubContract() as CAT20Sell
 
     sendPsbt
         .addCovenantInput(guard, GuardType.Transfer)
-        .addFeeInputs([guardPsbt.getUtxo(3)])
-        .addOutput({
-            script: hexToUint8Array(subContract.recvOutput),
-            value: subContract.scalePrice
-                ? subContract.price * toBuyUserAmount * 256n
-                : subContract.price * toBuyUserAmount,
-        })
-
+        .addFeeInputs([guardPsbt.getUtxo(2)])
+    if (remainingSatoshi > 0n) {
+        sendPsbt.addCovenantOutput(cat20Buy, Number(remainingSatoshi))
+    }
     if (serviceFeeInfo.satoshis !== '0000000000000000') {
         sendPsbt.addOutput({
             script: hexToUint8Array(serviceFeeInfo.script),
@@ -276,18 +274,17 @@ function buildSendTx(
         })
     }
     sendPsbt.change(changeAddress, feeRate, estimatedVSize)
-
     const inputCtxs = sendPsbt.calculateInputCtxs()
     const guardInputIndex = inputTokens.length + 1
-    // unlock cat20sell
+    // unlock cat20Buy
     sendPsbt.updateCovenantInput(
         0,
-        cat20Sell,
-        cat20Sell.take(
+        cat20Buy,
+        cat20Buy.take(
             0,
             inputCtxs,
             toBuyUserAmount,
-            sellChange,
+            toSellerAmount,
             toTokenAddress(address),
             serviceFeeInfo
         )
@@ -297,12 +294,13 @@ function buildSendTx(
         sendPsbt.updateCovenantInput(
             i,
             inputTokens[i - 1],
-            inputTokens[i - 1].contractSpend(
+            inputTokens[i - 1].userSpend(
                 i,
                 inputCtxs,
                 tracableTokens[i - 1].trace,
                 guard.getGuardInfo(guardInputIndex, guardPsbt.toTxHex()),
-                0
+                isP2TR(address),
+                pubKey
             )
         )
     }
@@ -324,13 +322,14 @@ function buildSendTx(
 function estimateSentTxVSize(
     tracableTokens: TracedCat20Token[],
     guard: Cat20GuardCovenant,
-    cat20Sell: CAT20SellCovenant,
+    cat20Buy: CAT20BuyCovenant,
     guardPsbt: CatPsbt,
     address: string,
     pubKey: string,
     outputTokens: CAT20Covenant[],
     toBuyUserAmount: int32,
-    sellChange: int32,
+    toSellerAmount: int32,
+    remainingSatoshi: int32,
     changeAddress: string,
     feeRate: number,
     serviceFeeInfo: ChangeInfo
@@ -338,13 +337,14 @@ function estimateSentTxVSize(
     return buildSendTx(
         tracableTokens,
         guard,
-        cat20Sell,
+        cat20Buy,
         guardPsbt,
         address,
         pubKey,
         outputTokens,
         toBuyUserAmount,
-        sellChange,
+        toSellerAmount,
+        remainingSatoshi,
         changeAddress,
         feeRate,
         serviceFeeInfo

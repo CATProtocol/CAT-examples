@@ -60,7 +60,7 @@ export class CAT20BuyCovenant extends Covenant {
                 inputCtxs,
                 0n,
                 0n,
-                PubKeyHash(''),
+                PubKeyHash('00'),
                 {
                     script: '',
                     satoshis: '0000000000000000',
