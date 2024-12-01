@@ -71,6 +71,8 @@ export async function createCAT20SellOrder(
         cat20Script: subContract.cat20Script,
         recvOutput: subContract.recvOutput,
         sellerAddress: subContract.sellerAddress,
+        sellContractAddress: cat20Receiver,
+        sellAmount: sellAmount,
         price: subContract.price,
         scalePrice: subContract.scalePrice,
         txids: [
