@@ -2,6 +2,7 @@ import {
     CAT20State,
     CAT721State,
     CatPsbt,
+    ChangeInfo,
     Covenant,
     InputContext,
     Postage,
@@ -64,7 +65,8 @@ export class LockToMintCovenant extends Covenant {
             isP2TR: boolean
             pubKey: ByteString
         },
-        cat20Change: int32
+        cat20Change: int32,
+        serviceFeeInfo: ChangeInfo
     ): SubContractCall {
         return {
             method: 'claimNft',
@@ -78,7 +80,8 @@ export class LockToMintCovenant extends Covenant {
                 cat20State,
                 cat20TxStatesInfo,
                 cat20OwnerSig,
-                cat20Change
+                cat20Change,
+                serviceFeeInfo
             ),
         }
     }
@@ -96,7 +99,8 @@ export class LockToMintCovenant extends Covenant {
             isP2TR: boolean
             pubKey: ByteString
         },
-        cat20Change: int32
+        cat20Change: int32,
+        serviceFeeInfo: ChangeInfo
     ) {
         const inputCtx = inputCtxs.get(inputIndex)
         if (!inputCtx) {
@@ -134,7 +138,7 @@ export class LockToMintCovenant extends Covenant {
             args.push(shPreimage) // shPreimage
             args.push(prevoutsCtx) // prevoutsCtx
             args.push(spentScriptsCtx) // spentScriptsCtx
-            args.push(curPsbt.getChangeInfo()) // changeInfo
+            args.push(serviceFeeInfo) // changeInfo
             return args
         }
     }

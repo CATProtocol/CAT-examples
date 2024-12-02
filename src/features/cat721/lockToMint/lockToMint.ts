@@ -20,8 +20,17 @@ import {
     toXOnly,
     TracedCat20Token,
     bitcoinjs,
+    toTokenAddress,
+    txToTxHeaderTiny,
+    getBackTraceInfo_,
+    btc,
+    txToTxHeader,
+    PreTxStatesInfo,
+    uint8ArrayToHex,
+    ChangeInfo,
+    int32,
 } from '@cat-protocol/cat-sdk'
-import { Ripemd160, UTXO, hash160 } from 'scrypt-ts'
+import { Ripemd160, UTXO, hash160, int2ByteString } from 'scrypt-ts'
 import { LockToMintCovenant } from '../../../covenants/cat721/lockToMintCovenant'
 import { LockToMint } from '../../../contracts/cat721/lockToMint'
 
@@ -32,7 +41,7 @@ export async function lockToMint(
     signer: Signer,
     cat20Covenant: CAT20Covenant,
     cat721Covenant: CAT721Covenant,
-    nftReceiver: CAT721State,
+    nftReceiver: string,
     lockToMintCovenant: LockToMintCovenant,
     utxoProvider: UtxoProvider,
     chainProvider: ChainProvider,
@@ -86,7 +95,7 @@ export async function lockToMint(
         })),
         [
             {
-                address: Ripemd160(nftReceiver.ownerAddr),
+                address: toTokenAddress(nftReceiver),
                 outputIndex: 1,
             },
         ]
@@ -111,10 +120,12 @@ export async function lockToMint(
             outputIndex: 2,
         },
     ]
+    let cat20Change = 0n
     if (inputToken.state.amount > lockToMint.lockTokenAmount) {
+        cat20Change = inputToken.state.amount - lockToMint.lockTokenAmount
         receivers.push({
             address: Ripemd160(inputToken.state.ownerAddr),
-            amount: inputToken.state.amount - lockToMint.lockTokenAmount,
+            amount: cat20Change,
             outputIndex: 3,
         })
     }
@@ -130,6 +141,7 @@ export async function lockToMint(
     const lockToMintPsbt = buildLockToMintTx(
         tracableNfts,
         tracableTokens,
+        cat20Change,
         guard,
         guardCAT20,
         lockToMintCovenant,
@@ -264,6 +276,7 @@ function buildCAT20GuardTx(
 function buildLockToMintTx(
     tracableNfts: TracedCat721Nft[],
     tracableTokens: TracedCat20Token[],
+    cat20Change: int32,
     guard: CAT721GuardCovenant,
     guardCAT20: Cat20GuardCovenant,
     lockToMintCovenant: LockToMintCovenant,
@@ -319,10 +332,18 @@ function buildLockToMintTx(
         address: serviceFeeAddress,
         value: BigInt(serviceFee),
     })
+    const serviceOutputIndex = lockToMintTx.txOutputs.length - 1
+    const serviceFeeInfo: ChangeInfo = {
+        script: uint8ArrayToHex(
+            lockToMintTx.txOutputs[serviceOutputIndex].script
+        ),
+        satoshis: int2ByteString(BigInt(serviceFee), 8n),
+    }
 
     const inputCtxs = lockToMintTx.calculateInputCtxs()
     const guardInputIndex = 2
     const guardCAT20InputIndex = 3
+    const lockToMintInputIndex = 4
     // unlock nfts
     for (let i = 0; i < inputNfts.length; i++) {
         lockToMintTx.updateCovenantInput(
@@ -342,7 +363,7 @@ function buildLockToMintTx(
             i + 1,
             inputTokens[i],
             inputTokens[i].userSpend(
-                i,
+                i + 1,
                 inputCtxs,
                 tracableTokens[i].trace,
                 guardCAT20.getGuardInfo(
@@ -370,13 +391,40 @@ function buildLockToMintTx(
         guardCAT20InputIndex,
         guardCAT20,
         guardCAT20.transfer(
-            guardInputIndex,
+            guardCAT20InputIndex,
             inputCtxs,
             outputTokens,
             guardCAT20Psbt.toTxHex()
         )
     )
+    const trace = tracableTokens[0].trace
+    const prevTx = new btc.Transaction(trace.prevTxHex)
+    const txHeader = txToTxHeader(prevTx.toBuffer(true))
+    const txHeaderTiny = txToTxHeaderTiny(txHeader)
     // unlock lockToMint
-
+    const preCAT20TxState: PreTxStatesInfo = {
+        statesHashRoot: trace.prevTxState.hashRoot,
+        txoStateHashes: trace.prevTxState.stateHashList,
+    }
+    lockToMintTx.updateCovenantInput(
+        lockToMintInputIndex,
+        lockToMintCovenant,
+        lockToMintCovenant.claimNft(
+            lockToMintInputIndex,
+            inputCtxs,
+            outputNfts[0].state!,
+            txHeaderTiny,
+            BigInt(inputTokens[0].utxo.outputIndex),
+            int2ByteString(BigInt(inputTokens[0].utxo.outputIndex), 4n),
+            inputTokens[0].state,
+            preCAT20TxState,
+            {
+                isP2TR: isP2TR(changeAddress),
+                pubKey: pubKey,
+            },
+            cat20Change,
+            serviceFeeInfo
+        )
+    )
     return lockToMintTx
 }
