@@ -37,6 +37,22 @@ import { LockToMint } from '../../../contracts/cat721/lockToMint'
 /**
  * lock CAT20 mint a CAT721
  */
+/**
+ *
+ * @param signer a signer, such as {@link DefaultSigner} or {@link UnisatSigner}
+ * @param cat20Covenant
+ * @param cat721Covenant a {@link CAT721Covenant}
+ * @param nftReceiver an address which user receive nft
+ * @param lockToMintCovenant {@link LockToMintCovenant}
+ * @param utxoProvider a {@link UtxoProvider}
+ * @param chainProvider a {@link ChainProvider}
+ * @param cat721Utxo a {@link Cat721Utxo}
+ * @param cat20Utxo a {@link Cat20Utxo}
+ * @param feeRate specify the fee rate for constructing transactions
+ * @param serviceFeeAddress an address which service fee pay to
+ * @param serviceFee the number of satoshi pay to service
+ * @returns
+ */
 export async function lockToMint(
     signer: Signer,
     cat20Covenant: CAT20Covenant,
