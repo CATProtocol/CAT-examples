@@ -15,7 +15,7 @@ import { Psbt } from 'bitcoinjs-lib'
 import { UTXO } from 'scrypt-ts'
 
 /**
- * create CAT20 sell order, and send cat20 to sell contract
+ * create CAT20 buy order, and lock satoshis to buy order output
  * @param signer a signer, such as {@link DefaultSigner} or {@link UnisatSigner}
  * @param cat20Covenant a {@link CAT20Covenant}
  * @param utxoProvider a {@link UtxoProvider}
