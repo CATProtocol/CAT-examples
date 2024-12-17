@@ -29,7 +29,7 @@
     ]
   },
   "dependencies": {
-    "@cat-protocol/cat-sdk": "^1.0.4",
+    "@cat-protocol/cat-sdk": "^1.0.9",
     "@mempool/mempool.js": "^2.3.0",
     "bigi": "^1.4.2",
     "bitcore-lib-inquisition": "^10.0.30",
