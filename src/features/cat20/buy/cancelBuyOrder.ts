@@ -1,6 +1,22 @@
-import { CatPsbt, ChainProvider, Signer, isP2TR } from '@cat-protocol/cat-sdk'
+import {
+    ChainProvider,
+    ExtPsbt,
+    PubKey,
+    PubKeyHash,
+    Sig,
+    Signer,
+    TxUtils,
+} from '@scrypt-inc/scrypt-ts-btc'
 import { CAT20BuyCovenant } from '../../../covenants/cat20/cat20BuyCovenant'
-import { Psbt } from 'bitcoinjs-lib'
+import { Psbt } from '@scrypt-inc/bitcoinjs-lib'
+import { CAT20Buy } from '../../../contracts/cat20/cat20Buy'
+import {
+    catToXOnly,
+    isP2TR,
+    Postage,
+    pubKeyPrefix,
+    satoshiToHex,
+} from '@cat-protocol/cat-sdk-v2'
 
 /**
  * cancel buy CAT20, and transfer satoshis back to owner
@@ -40,7 +56,7 @@ export async function cancelCAT20BuyOrder(
     // combine and finalize the psbts
     const cancelTx = await cancelPsbt
         .combine(Psbt.fromHex(signedCancelPsbt))
-        .finalizeAllInputsAsync()
+        .finalizeAllInputs()
 
     // broadcast the transactions
     await chainProvider.broadcast(cancelTx.extractTransaction().toHex())
@@ -52,18 +68,38 @@ function buildCancelTx(
     address: string,
     pubKey: string,
     changeAddress: string,
-    feeRate: number,
-    estimatedVSize?: number
+    feeRate: number
 ) {
-    const cancelPsbt = new CatPsbt()
+    const cancelPsbt = new ExtPsbt()
     cancelPsbt.addCovenantInput(cat20Buy)
-    cancelPsbt.change(changeAddress, feeRate, estimatedVSize)
-    const inputCtxs = cancelPsbt.calculateInputCtxs()
+    cancelPsbt.change(changeAddress, feeRate)
     // unlock cat20cancel
-    cancelPsbt.updateCovenantInput(
-        0,
-        cat20Buy,
-        cat20Buy.cancel(0, inputCtxs, isP2TR(address), pubKey)
-    )
+    cancelPsbt.updateCovenantInput(0, cat20Buy, {
+        invokeMethod: (contract: CAT20Buy, curPsbt: ExtPsbt) => {
+            let preRemainingAmount = BigInt(cat20Buy.utxo.satoshis)
+            if (contract.scalePrice) {
+                preRemainingAmount = preRemainingAmount / 256n
+            }
+            contract.take(
+                preRemainingAmount,
+                0n,
+                0n,
+                PubKeyHash('00'),
+                satoshiToHex(BigInt(Postage.TOKEN_POSTAGE)),
+                1n,
+                true,
+                isP2TR(address) ? '' : pubKeyPrefix(pubKey),
+                catToXOnly(pubKey, isP2TR(address)) as PubKey,
+                curPsbt.getSig(0, {
+                    publicKey: pubKey,
+                }) as Sig,
+                {
+                    satoshis: TxUtils.ZERO_SATS,
+                    script: '',
+                }
+            )
+        },
+    })
+    cancelPsbt.seal()
     return cancelPsbt
 }

@@ -1,51 +1,21 @@
-import { MAX_INPUT, int32 } from '@cat-protocol/cat-sdk'
 import {
-    method,
-    toByteString,
-    ByteString,
     SmartContractLib,
+    method,
+    ByteString,
     len,
-    int2ByteString,
+    toByteString,
     assert,
-    FixedArray,
-    sha256,
-} from 'scrypt-ts'
-
-export type SpentAmountsCtx = FixedArray<ByteString, typeof MAX_INPUT>
+    int32ToByteString,
+    Int32,
+} from '@scrypt-inc/scrypt-ts-btc'
 
 export class SellUtil extends SmartContractLib {
     @method()
-    static mergeSpentAmounts(spentAmounts: SpentAmountsCtx): ByteString {
-        let result = toByteString('')
-        for (let index = 0; index < MAX_INPUT; index++) {
-            const spentAmount = spentAmounts[index]
-            if (len(spentAmount) == 8n) {
-                result += spentAmount
-            }
-        }
-        return result
-    }
-
-    @method()
-    static checkSpentAmountsCtx(
-        spentAmounts: SpentAmountsCtx,
-        hashSpentAmounts: ByteString
-    ): boolean {
-        // check spent amounts
-        assert(
-            sha256(SellUtil.mergeSpentAmounts(spentAmounts)) ==
-                hashSpentAmounts,
-            'spentAmountsCtx mismatch'
-        )
-        return true
-    }
-
-    @method()
-    static int32ToSatoshiBytes(amount: int32, scale: boolean): ByteString {
+    static int32ToSatoshiBytes(amount: Int32, scale: boolean): ByteString {
         assert(amount > 0n)
         let amountBytes = scale
             ? SellUtil.scale2ByteString(amount)
-            : int2ByteString(amount)
+            : int32ToByteString(amount)
         const amountBytesLen = len(amountBytes)
         if (amountBytesLen == 1n) {
             amountBytes += toByteString('00000000000000')
@@ -66,7 +36,7 @@ export class SellUtil extends SmartContractLib {
     }
 
     @method()
-    static scale2ByteString(amount: int32): ByteString {
-        return toByteString('00') + int2ByteString(amount)
+    static scale2ByteString(amount: Int32): ByteString {
+        return toByteString('00') + int32ToByteString(amount)
     }
 }

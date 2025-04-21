@@ -1,29 +1,154 @@
+import { CAT20BuyCovenant } from '../../../covenants/cat20/cat20BuyCovenant'
+import { CAT20Buy } from '../../../contracts/cat20/cat20Buy'
+import {
+    ByteString,
+    ChainProvider,
+    ExtPsbt,
+    fill,
+    FixedArray,
+    getBackTraceInfo,
+    hexToUint8Array,
+    Int32,
+    PubKey,
+    Ripemd160,
+    Sig,
+    Signer,
+    STATE_OUTPUT_COUNT_MAX,
+    toByteString,
+    TX_INPUT_COUNT_MAX,
+    TxOut,
+    TxUtils,
+    uint8ArrayToHex,
+    UTXO,
+    UtxoProvider,
+} from '@scrypt-inc/scrypt-ts-btc'
 import {
     CAT20Covenant,
-    Cat20GuardCovenant,
-    Cat20Utxo,
-    CatPsbt,
-    ChainProvider,
-    ChangeInfo,
-    DUST_LIMIT,
-    GuardType,
-    MAX_INPUT,
-    Postage,
-    Signer,
-    TracedCat20Token,
-    UtxoProvider,
-    getDummyUtxo,
-    getDummyUtxos,
-    hexToUint8Array,
-    int32,
-    isP2TR,
-    pickLargeFeeUtxo,
     toTokenAddress,
-} from '@cat-protocol/cat-sdk'
-import { CAT20BuyCovenant } from '../../../covenants/cat20/cat20BuyCovenant'
-import { Ripemd160, UTXO, byteString2Int } from 'scrypt-ts'
-import { Psbt } from 'bitcoinjs-lib'
-import { CAT20Buy } from '../../../contracts/cat20/cat20Buy'
+    Postage,
+    pickLargeFeeUtxo,
+    isP2TR,
+    CAT20Utxo,
+    CAT20GuardCovenant,
+    byteStringToBigInt,
+    TracedCAT20Token,
+    satoshiToHex,
+    CAT20,
+    pubKeyPrefix,
+    catToXOnly,
+    CAT20Guard,
+    CAT20State,
+    emptyOutputByteStrings,
+} from '@cat-protocol/cat-sdk-v2'
+import { Psbt, address as Address } from '@scrypt-inc/bitcoinjs-lib'
+import { createTransferGuard } from '../../../lib/guardUtils'
+
+// function createTransferGuard(
+//     inputInfos: {
+//         token: CAT20Covenant
+//         inputIndex: number
+//     }[],
+//     receivers: {
+//         address: ByteString
+//         amount: Int32
+//         outputIndex: number
+//     }[],
+//     changeInfo?: {
+//         address: ByteString
+//     }
+// ): {
+//     guard: CAT20GuardCovenant
+//     outputTokens: FixedArray<
+//         CAT20Covenant | undefined,
+//         typeof STATE_OUTPUT_COUNT_MAX
+//     >
+//     changeTokenOutputIndex: number
+// } {
+//     if (inputInfos.length === 0) {
+//         throw new Error('No spent tokens')
+//     }
+
+//     if (inputInfos.length > TX_INPUT_COUNT_MAX - 1) {
+//         throw new Error(
+//             `Too many token inputs that exceed the maximum limit of ${TX_INPUT_COUNT_MAX}`
+//         )
+//     }
+
+//     const totalTokenInputAmount = inputInfos.reduce((acc, info) => {
+//         if (!info.token.state) {
+//             throw new Error('Token state is missing')
+//         }
+//         return acc + info.token.state.amount
+//     }, 0n)
+
+//     const totalTokenOutputAmount = receivers.reduce(
+//         (acc, receiver) => acc + receiver.amount,
+//         0n
+//     )
+
+//     if (totalTokenInputAmount < totalTokenOutputAmount) {
+//         throw new Error('Insufficient token input amount')
+//     }
+
+//     if (totalTokenInputAmount > totalTokenOutputAmount && !changeInfo) {
+//         throw new Error(
+//             'Unbalanced token output amount, change address is missing'
+//         )
+//     }
+
+//     const changeTokenAmount = totalTokenInputAmount - totalTokenOutputAmount
+//     let changeTokenOutputIndex = -1
+//     if (changeTokenAmount > 0) {
+//         changeTokenOutputIndex = receivers.length + 1
+//     }
+
+//     const minterAddr = inputInfos[0].token.minterAddr
+//     const guardState = CAT20Guard.createEmptyState()
+//     guardState.tokenScripts[0] = inputInfos[0].token.lockingScriptHex
+//     for (let index = 0; index < inputInfos.length; index++) {
+//         const inputInfo = inputInfos[index]
+//         guardState.tokenScriptIndexes[inputInfo.inputIndex] = 0n
+//         guardState.inputStateHashes[inputInfo.inputIndex] = CAT20.stateHash(
+//             inputInfos[index].token.state
+//         )
+//     }
+//     guardState.tokenAmounts[0] = inputInfos.reduce(
+//         (p, c) => p + c.token.state.amount,
+//         0n
+//     )
+//     const guard = new CAT20GuardCovenant(guardState)
+//     const outputTokens = emptyOutputByteStrings().map((_, index) => {
+//         const receiver = receivers.find((r) => r.outputIndex === index + 1)
+//         if (receiver) {
+//             if (receiver.amount <= 0) {
+//                 throw new Error(
+//                     `Invalid token amount ${receiver.amount} for output ${
+//                         index + 1
+//                     }`
+//                 )
+//             }
+//             return new CAT20Covenant(minterAddr, {
+//                 amount: receiver.amount,
+//                 ownerAddr: receiver.address,
+//             })
+//         } else if (
+//             changeTokenAmount > 0 &&
+//             index + 1 === changeTokenOutputIndex
+//         ) {
+//             return new CAT20Covenant(minterAddr, {
+//                 amount: changeTokenAmount,
+//                 ownerAddr: changeInfo.address,
+//             })
+//         } else {
+//             return undefined
+//         }
+//     }) as FixedArray<CAT20Covenant | undefined, typeof STATE_OUTPUT_COUNT_MAX>
+//     return {
+//         guard,
+//         outputTokens,
+//         changeTokenOutputIndex,
+//     }
+// }
 
 /**
  * take a CAT20 buy order
@@ -40,12 +165,12 @@ import { CAT20Buy } from '../../../contracts/cat20/cat20Buy'
 export async function takeCAT20BuyOrder(
     signer: Signer,
     cat20Covenant: CAT20Covenant,
-    inputTokenUtxos: Cat20Utxo[],
+    inputTokenUtxos: CAT20Utxo[],
     cat20BuyCovenant: CAT20BuyCovenant,
     utxoProvider: UtxoProvider,
     chainProvider: ChainProvider,
-    toBuyUserAmount: int32,
-    serviceFeeInfo: ChangeInfo,
+    toBuyUserAmount: Int32,
+    serviceFeeInfo: TxOut,
     feeRate: number
 ) {
     const pubkey = await signer.getPublicKey()
@@ -70,8 +195,8 @@ export async function takeCAT20BuyOrder(
     }, 0n)
     const tokenChange = totalCat20Input - toBuyUserAmount
     const receivers: {
-        address: Ripemd160
-        amount: int32
+        address: ByteString
+        amount: Int32
         outputIndex: number
     }[] = [
         {
@@ -87,37 +212,15 @@ export async function takeCAT20BuyOrder(
             outputIndex: 2,
         })
     }
-    const { guard, outputTokens } = CAT20Covenant.createTransferGuard(
+    const { guard, outputTokens } = createTransferGuard(
         inputTokens.map((token, i) => ({
             token,
             inputIndex: i + 1,
         })),
         receivers
     )
-    const { estGuardTxVSize, dummyGuardPsbt } = estimateGuardTxVSize(
-        guard.bindToUtxo({ ...getDummyUtxo(changeAddress), script: undefined }),
-        changeAddress
-    )
 
-    const estSendTxVSize = estimateSentTxVSize(
-        tracableTokens,
-        guard,
-        cat20BuyCovenant,
-        dummyGuardPsbt,
-        address,
-        pubkey,
-        outputTokens,
-        toBuyUserAmount,
-        tokenChange,
-        remainingSatoshi,
-        changeAddress,
-        feeRate,
-        serviceFeeInfo
-    )
-
-    const total =
-        feeRate * (estGuardTxVSize + estSendTxVSize) + Postage.TOKEN_POSTAGE // for a token change output
-    const utxos = await utxoProvider.getUtxos(changeAddress, { total })
+    const utxos = await utxoProvider.getUtxos(changeAddress)
 
     if (utxos.length === 0) {
         throw new Error('Insufficient satoshis input amount')
@@ -125,13 +228,7 @@ export async function takeCAT20BuyOrder(
 
     const feeUtxo = pickLargeFeeUtxo(utxos)
 
-    const guardPsbt = buildGuardTx(
-        guard,
-        [feeUtxo],
-        changeAddress,
-        feeRate,
-        estGuardTxVSize
-    )
+    const guardPsbt = buildGuardTx(guard, [feeUtxo], changeAddress, feeRate)
 
     const sendPsbt = buildSendTx(
         tracableTokens,
@@ -146,8 +243,7 @@ export async function takeCAT20BuyOrder(
         remainingSatoshi,
         changeAddress,
         feeRate,
-        serviceFeeInfo,
-        estSendTxVSize
+        serviceFeeInfo
     )
 
     // sign the psbts
@@ -165,10 +261,10 @@ export async function takeCAT20BuyOrder(
     // combine and finalize the psbts
     const guardTx = await guardPsbt
         .combine(Psbt.fromHex(signedGuardPsbt))
-        .finalizeAllInputsAsync()
+        .finalizeAllInputs()
     const sendTx = await sendPsbt
         .combine(Psbt.fromHex(signedSendPsbt))
-        .finalizeAllInputsAsync()
+        .finalizeAllInputs()
 
     // broadcast the transactions
     await chainProvider.broadcast(guardTx.extractTransaction().toHex())
@@ -177,7 +273,7 @@ export async function takeCAT20BuyOrder(
 }
 
 function buildGuardTx(
-    guard: Cat20GuardCovenant,
+    guard: CAT20GuardCovenant,
     feeUtxos: UTXO[],
     changeAddress: string,
     feeRate: number,
@@ -196,57 +292,40 @@ function buildGuardTx(
         throw new Error('Insufficient satoshis input amount')
     }
 
-    const guardTx = new CatPsbt()
-        .addFeeInputs(feeUtxos)
+    const guardTx = new ExtPsbt()
+        .spendUTXO(feeUtxos)
         .addCovenantOutput(guard, Postage.GUARD_POSTAGE)
-        .change(changeAddress, feeRate, estimatedVSize)
+        .change(changeAddress, feeRate)
 
     guard.bindToUtxo(guardTx.getUtxo(1))
-
+    guardTx.seal()
     return guardTx
 }
 
-function estimateGuardTxVSize(
-    guard: Cat20GuardCovenant,
-    changeAddress: string
-) {
-    const dummyGuardPsbt = buildGuardTx(
-        guard,
-        getDummyUtxos(changeAddress, 1),
-        changeAddress,
-        DUST_LIMIT
-    )
-    return {
-        dummyGuardPsbt,
-        estGuardTxVSize: dummyGuardPsbt.estimateVSize(),
-    }
-}
-
 function buildSendTx(
-    tracableTokens: TracedCat20Token[],
-    guard: Cat20GuardCovenant,
+    tracableTokens: TracedCAT20Token[],
+    guard: CAT20GuardCovenant,
     cat20Buy: CAT20BuyCovenant,
-    guardPsbt: CatPsbt,
+    guardPsbt: ExtPsbt,
     address: string,
     pubKey: string,
     outputTokens: (CAT20Covenant | undefined)[],
-    toBuyUserAmount: int32,
-    toSellerAmount: int32,
-    remainingSatoshi: int32,
+    toBuyUserAmount: Int32,
+    toSellerAmount: Int32,
+    remainingSatoshi: Int32,
     changeAddress: string,
     feeRate: number,
-    serviceFeeInfo: ChangeInfo,
-    estimatedVSize?: number
+    serviceFeeInfo: TxOut
 ) {
     const inputTokens = tracableTokens.map((token) => token.token)
 
-    if (inputTokens.length + 2 > MAX_INPUT) {
+    if (inputTokens.length + 2 > TX_INPUT_COUNT_MAX) {
         throw new Error(
-            `Too many inputs that exceed the maximum input limit of ${MAX_INPUT}`
+            `Too many inputs that exceed the maximum input limit of ${TX_INPUT_COUNT_MAX}`
         )
     }
 
-    const sendPsbt = new CatPsbt()
+    const sendPsbt = new ExtPsbt()
 
     // add token outputs
     for (const outputToken of outputTokens) {
@@ -261,92 +340,137 @@ function buildSendTx(
         sendPsbt.addCovenantInput(inputToken)
     }
 
-    sendPsbt
-        .addCovenantInput(guard, GuardType.Transfer)
-        .addFeeInputs([guardPsbt.getUtxo(2)])
+    sendPsbt.addCovenantInput(guard).spendUTXO([guardPsbt.getUtxo(2)])
     if (remainingSatoshi > 0n) {
         sendPsbt.addCovenantOutput(cat20Buy, Number(remainingSatoshi))
     }
     if (serviceFeeInfo.satoshis !== '0000000000000000') {
         sendPsbt.addOutput({
             script: hexToUint8Array(serviceFeeInfo.script),
-            value: byteString2Int(serviceFeeInfo.satoshis),
+            value: byteStringToBigInt(serviceFeeInfo.satoshis),
         })
     }
-    sendPsbt.change(changeAddress, feeRate, estimatedVSize)
-    const inputCtxs = sendPsbt.calculateInputCtxs()
+    sendPsbt.change(changeAddress, feeRate)
     const guardInputIndex = inputTokens.length + 1
     // unlock cat20Buy
-    sendPsbt.updateCovenantInput(
-        0,
-        cat20Buy,
-        cat20Buy.take(
-            0,
-            inputCtxs,
-            toBuyUserAmount,
-            toSellerAmount,
-            toTokenAddress(address),
-            serviceFeeInfo
-        )
-    )
-    // unlock tokens
-    for (let i = 1; i < inputTokens.length + 1; i++) {
-        sendPsbt.updateCovenantInput(
-            i,
-            inputTokens[i - 1],
-            inputTokens[i - 1].userSpend(
-                i,
-                inputCtxs,
-                tracableTokens[i - 1].trace,
-                guard.getGuardInfo(guardInputIndex, guardPsbt.toTxHex()),
-                isP2TR(address),
-                pubKey
+    sendPsbt.updateCovenantInput(0, cat20Buy, {
+        invokeMethod: (contract: CAT20Buy) => {
+            let preRemainingAmount = BigInt(cat20Buy.utxo.satoshis)
+            if (contract.scalePrice) {
+                preRemainingAmount = preRemainingAmount / 256n
+            }
+            contract.take(
+                preRemainingAmount / contract.price,
+                toBuyUserAmount,
+                toSellerAmount,
+                toTokenAddress(address),
+                satoshiToHex(BigInt(Postage.TOKEN_POSTAGE)),
+                1n,
+                false,
+                toByteString(''),
+                toByteString('') as PubKey,
+                toByteString('') as Sig,
+                {
+                    satoshis: TxUtils.ZERO_SATS,
+                    script: '',
+                }
             )
-        )
+        },
+    })
+    // unlock tokens
+    const _isP2TR = isP2TR(changeAddress)
+    for (let i = 1; i < inputTokens.length + 1; i++) {
+        sendPsbt.updateCovenantInput(i, inputTokens[i - 1], {
+            invokeMethod: (contract: CAT20, curPsbt) => {
+                const sig = curPsbt.getSig(i, {
+                    address: address,
+                    disableTweakSigner: _isP2TR ? false : true,
+                })
+                contract.unlock(
+                    {
+                        userPubKeyPrefix: _isP2TR ? '' : pubKeyPrefix(pubKey),
+                        userXOnlyPubKey: PubKey(catToXOnly(pubKey, _isP2TR)),
+                        userSig: sig,
+                        contractInputIndexVal: -1n,
+                    },
+                    guard.state,
+                    BigInt(guardInputIndex),
+                    getBackTraceInfo(
+                        tracableTokens[i - 1].trace.prevTxHex,
+                        tracableTokens[i - 1].trace.prevPrevTxHex,
+                        tracableTokens[i - 1].trace.prevTxInput
+                    )
+                )
+            },
+        })
     }
 
-    // unlock guard
-    sendPsbt.updateCovenantInput(
-        guardInputIndex,
-        guard,
-        guard.transfer(
-            guardInputIndex,
-            inputCtxs,
-            outputTokens,
-            guardPsbt.toTxHex()
-        )
+    const cat20StateArray = fill<CAT20State, typeof TX_INPUT_COUNT_MAX>(
+        { ownerAddr: toByteString(''), amount: 0n },
+        TX_INPUT_COUNT_MAX
     )
-    return sendPsbt
-}
+    inputTokens.forEach((value, index) => {
+        if (value) {
+            cat20StateArray[index + 1] = value.state
+        }
+    })
+    // unlock guard
+    sendPsbt.updateCovenantInput(guardInputIndex, guard, {
+        invokeMethod: (contract: CAT20Guard, curPsbt: ExtPsbt) => {
+            const tokenOwners = outputTokens.map(
+                (output) => output?.state!.ownerAddr || ''
+            )
+            const tokenAmounts = outputTokens.map(
+                (output) => output?.state!.amount || 0n
+            )
+            const tokenScriptIndexArray = fill(-1n, STATE_OUTPUT_COUNT_MAX)
+            outputTokens.forEach((value, index) => {
+                if (value) {
+                    tokenScriptIndexArray[index] = 0n
+                }
+            })
 
-function estimateSentTxVSize(
-    tracableTokens: TracedCat20Token[],
-    guard: Cat20GuardCovenant,
-    cat20Buy: CAT20BuyCovenant,
-    guardPsbt: CatPsbt,
-    address: string,
-    pubKey: string,
-    outputTokens: CAT20Covenant[],
-    toBuyUserAmount: int32,
-    toSellerAmount: int32,
-    remainingSatoshi: int32,
-    changeAddress: string,
-    feeRate: number,
-    serviceFeeInfo: ChangeInfo
-) {
-    return buildSendTx(
-        tracableTokens,
-        guard,
-        cat20Buy,
-        guardPsbt,
-        address,
-        pubKey,
-        outputTokens,
-        toBuyUserAmount,
-        toSellerAmount,
-        remainingSatoshi,
-        changeAddress,
-        feeRate,
-        serviceFeeInfo
-    ).estimateVSize()
+            const ownerAddrOrScripts = tokenOwners.map((ownerAddr, oidx) => {
+                const output = curPsbt.txOutputs[oidx + 1]
+                return (
+                    ownerAddr ||
+                    (output
+                        ? uint8ArrayToHex(output.script)
+                        : sendPsbt.isSealed
+                        ? ''
+                        : uint8ArrayToHex(
+                              Address.toOutputScript(changeAddress)
+                          ))
+                )
+            }) as unknown as FixedArray<
+                ByteString,
+                typeof STATE_OUTPUT_COUNT_MAX
+            >
+
+            const outputSatoshisList = curPsbt.getOutputSatoshisList()
+            const outputSatoshis = emptyOutputByteStrings().map(
+                (emtpyStr, i) => {
+                    if (outputSatoshisList[i + 1]) {
+                        return outputSatoshisList[i + 1]
+                    } else {
+                        return emtpyStr
+                    }
+                }
+            ) as FixedArray<ByteString, typeof STATE_OUTPUT_COUNT_MAX>
+
+            contract.unlock(
+                ownerAddrOrScripts,
+                tokenAmounts as unknown as FixedArray<
+                    Int32,
+                    typeof STATE_OUTPUT_COUNT_MAX
+                >,
+                tokenScriptIndexArray,
+                outputSatoshis,
+                cat20StateArray,
+                BigInt(curPsbt.txOutputs.length - 1)
+            )
+        },
+    })
+    sendPsbt.seal()
+    return sendPsbt
 }

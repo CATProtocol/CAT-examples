@@ -1,32 +1,21 @@
+import { OpMul } from '@scrypt-inc/scrypt-ts-lib-btc'
+import { SellUtil } from './sellUtil'
 import {
-    ByteString,
-    PubKey,
-    PubKeyHash,
-    Sig,
     SmartContract,
-    assert,
-    hash160,
-    method,
     prop,
-    sha256,
-    toByteString,
-} from 'scrypt-ts'
-import {
-    CAT20Proto,
-    ChangeInfo,
-    PrevoutsCtx,
-    SHPreimage,
-    SigHashUtils,
-    SpentScriptsCtx,
-    StateUtils,
-    TxUtil,
-    TxoStateHashes,
-    int32,
-} from '@cat-protocol/cat-sdk'
-import { OpMul } from 'scrypt-ts-lib-btc'
-import { SellUtil, SpentAmountsCtx } from './sellUtil'
+    ByteString,
+    method,
+    PubKey,
+    Sig,
+    Int32,
+    assert,
+    TxUtils,
+    TxOut,
+} from '@scrypt-inc/scrypt-ts-btc'
+import { CAT20, OwnerUtils } from '@cat-protocol/cat-sdk-v2'
+import { DexState } from './types'
 
-export class CAT20Buy extends SmartContract {
+export class CAT20Buy extends SmartContract<DexState> {
     @prop()
     cat20Script: ByteString
 
@@ -34,7 +23,7 @@ export class CAT20Buy extends SmartContract {
     buyerAddress: ByteString
 
     @prop()
-    price: int32
+    price: Int32
 
     @prop()
     scalePrice: boolean
@@ -42,7 +31,7 @@ export class CAT20Buy extends SmartContract {
     constructor(
         cat20Script: ByteString,
         buyerAddress: ByteString,
-        price: int32,
+        price: Int32,
         scalePrice: boolean
     ) {
         super(...arguments)
@@ -54,67 +43,40 @@ export class CAT20Buy extends SmartContract {
 
     @method()
     public take(
-        curTxoStateHashes: TxoStateHashes,
-        preRemainingAmount: int32,
-        toBuyerAmount: int32,
-        toSellerAmount: int32,
-        toSellerAddress: PubKeyHash,
+        preRemainingAmount: Int32,
+        toBuyerAmount: Int32,
+        toSellerAmount: Int32,
+        toSellerAddress: ByteString,
         tokenSatoshiBytes: ByteString,
-        tokenInputIndex: int32,
+        tokenInputIndex: Int32,
         // sig data
         cancel: boolean,
         pubKeyPrefix: ByteString,
         ownerPubKey: PubKey,
         ownerSig: Sig,
-        // ctxs
-        shPreimage: SHPreimage,
-        prevoutsCtx: PrevoutsCtx,
-        spentScriptsCtx: SpentScriptsCtx,
-        spentAmountsCtx: SpentAmountsCtx,
-        serviceFeeInfo: ChangeInfo,
-        changeInfo: ChangeInfo
+        serviceFeeInfo: TxOut
     ) {
         // check preimage
         if (cancel) {
-            assert(hash160(pubKeyPrefix + ownerPubKey) == this.buyerAddress)
+            assert(
+                OwnerUtils.toLockingScript(pubKeyPrefix, ownerPubKey) ==
+                    this.buyerAddress
+            )
             assert(this.checkSig(ownerSig, ownerPubKey))
         } else {
-            // Check sighash preimage.
+            assert(this.ctx.inputIndexVal == 0n)
             assert(
-                this.checkSig(
-                    SigHashUtils.checkSHPreimage(shPreimage),
-                    SigHashUtils.Gx
-                ),
-                'preimage check error'
-            )
-            assert(prevoutsCtx.inputIndexVal == 0n)
-            // check ctx
-            SigHashUtils.checkPrevoutsCtx(
-                prevoutsCtx,
-                shPreimage.hashPrevouts,
-                shPreimage.inputIndex
-            )
-            SigHashUtils.checkSpentScriptsCtx(
-                spentScriptsCtx,
-                shPreimage.hashSpentScripts
-            )
-
-            assert(
-                spentScriptsCtx[Number(tokenInputIndex)] == this.cat20Script,
+                this.ctx.spentScripts[Number(tokenInputIndex)] ==
+                    this.cat20Script,
                 'should spend the cat20Script'
             )
-            SellUtil.checkSpentAmountsCtx(
-                spentAmountsCtx,
-                shPreimage.hashSpentAmounts
-            )
             assert(toSellerAmount >= 0n, 'Invalid to seller amount')
-
             const preRemainingSatoshis = OpMul.mul(
                 this.price,
                 preRemainingAmount
             )
             assert(
-                spentAmountsCtx[Number(prevoutsCtx.inputIndexVal)] ==
+                this.ctx.spentAmount ==
                     SellUtil.int32ToSatoshiBytes(
                         preRemainingSatoshis,
                         this.scalePrice
@@ -128,29 +90,22 @@ export class CAT20Buy extends SmartContract {
             )
 
             // to buyer
-            let curStateHashes: ByteString = hash160(
-                CAT20Proto.stateHash({
-                    amount: toBuyerAmount,
+            this.appendStateOutput(
+                TxUtils.buildOutput(this.cat20Script, tokenSatoshiBytes),
+                CAT20.stateHash({
                     ownerAddr: this.buyerAddress,
+                    amount: toBuyerAmount,
                 })
-            )
-            const toBuyerTokenOutput = TxUtil.buildOutput(
-                this.cat20Script,
-                tokenSatoshiBytes
             )
 
             // sell token change
-            let toSellerTokenOutput = toByteString('')
             if (toSellerAmount > 0n) {
-                curStateHashes += hash160(
-                    CAT20Proto.stateHash({
-                        amount: toSellerAmount,
+                this.appendStateOutput(
+                    TxUtils.buildOutput(this.cat20Script, tokenSatoshiBytes),
+                    CAT20.stateHash({
                         ownerAddr: toSellerAddress,
+                        amount: toSellerAmount,
                     })
-                )
-                toSellerTokenOutput = TxUtil.buildOutput(
-                    this.cat20Script,
-                    tokenSatoshiBytes
                 )
             }
 
@@ -159,40 +114,38 @@ export class CAT20Buy extends SmartContract {
                 this.price,
                 preRemainingAmount - toBuyerAmount
             )
-            let remainingOutput = toByteString('')
             if (remainingSatoshis > 0n) {
-                const selfSpentScript =
-                    spentScriptsCtx[Number(prevoutsCtx.inputIndexVal)]
-                remainingOutput = TxUtil.buildOutput(
-                    selfSpentScript,
-                    SellUtil.int32ToSatoshiBytes(
-                        remainingSatoshis,
-                        this.scalePrice
-                    )
+                this.appendStateOutput(
+                    TxUtils.buildOutput(
+                        this.ctx.spentScript,
+                        SellUtil.int32ToSatoshiBytes(
+                            remainingSatoshis,
+                            this.scalePrice
+                        )
+                    ),
+                    // toByteString('') as Ripemd160
+                    CAT20Buy.stateHash(this.state)
                 )
             }
-
-            //
-            const curStateCnt: bigint = toSellerAmount == 0n ? 1n : 2n
-            const stateOutput = StateUtils.getCurrentStateOutput(
-                curStateHashes,
-                curStateCnt,
-                curTxoStateHashes
-            )
-            const feeOutput = TxUtil.getChangeOutput(serviceFeeInfo)
-            const changeOutput = TxUtil.getChangeOutput(changeInfo)
-            const hashOutputs = sha256(
-                stateOutput +
-                    toBuyerTokenOutput +
-                    toSellerTokenOutput +
-                    remainingOutput +
-                    feeOutput +
-                    changeOutput
-            )
+            const outputs =
+                this.buildStateOutputs() +
+                TxUtils.buildChangeOutput(serviceFeeInfo) +
+                this.buildChangeOutput()
             assert(
-                hashOutputs == shPreimage.hashOutputs,
-                'hashOutputs mismatch'
+                this.checkOutputs(outputs),
+                'Outputs mismatch with the transaction context'
             )
         }
     }
 }
+
+// 4a010000000000002251203b1abe1c2d300fc9e1c41a163795a84fb8d80c619a743537972762f395fc3a21
+// 4a010000000000002251203b1abe1c2d300fc9e1c41a163795a84fb8d80c619a743537972762f395fc3a21
+// a0bb0d000000000022512044f22427b6a4aa5ce23787b55ababa329888d30ae01acd8ac55a6c6a95ae964d
+// 4a010000000000002251203b1abe1c2d300fc9e1c41a163795a84fb8d80c619a743537972762f395fc3a21
+// 4a010000000000002251203b1abe1c2d300fc9e1c41a163795a84fb8d80c619a743537972762f395fc3a21
+// 7b0f86c5e05a49378c2f39124211792ae9402ee8
+// ea02df13fa0c0f776d31afbaedbe4f6beae10354
+// f1fd442ebf7c5a6e1fba9c1303a11ca97c1e5e62
+// 5790c55fc587ac9a9d9b657c1dc522f57fe3de3c
+// 532e9a45addb1f319a2750ed2a77ea580d0109da

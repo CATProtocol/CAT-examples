@@ -1,18 +1,15 @@
+import { CAT20BuyCovenant } from '../../../covenants/cat20/cat20BuyCovenant'
+import { CAT20Buy } from '../../../contracts/cat20/cat20Buy'
 import {
     ChainProvider,
+    ExtPsbt,
+    Int32,
     Signer,
+    UTXO,
     UtxoProvider,
-    toTokenAddress,
-    int32,
-    getDummyUtxo,
-    getDummyUtxos,
-    CatPsbt,
-} from '@cat-protocol/cat-sdk'
-import { CAT20BuyCovenant } from '../../../covenants/cat20/cat20BuyCovenant'
-import { CAT20Covenant } from '@cat-protocol/cat-sdk'
-import { CAT20Buy } from '../../../contracts/cat20/cat20Buy'
-import { Psbt } from 'bitcoinjs-lib'
-import { UTXO } from 'scrypt-ts'
+} from '@scrypt-inc/scrypt-ts-btc'
+import { CAT20Covenant, toTokenAddress } from '@cat-protocol/cat-sdk-v2'
+import { Psbt } from '@scrypt-inc/bitcoinjs-lib'
 
 /**
  * create CAT20 buy order, and lock satoshis to buy order output
@@ -32,7 +29,7 @@ export async function createCAT20BuyOrder(
     cat20Covenant: CAT20Covenant,
     utxoProvider: UtxoProvider,
     chainProvider: ChainProvider,
-    buyAmount: int32,
+    buyAmount: Int32,
     price: bigint,
     scalePrice: boolean,
     feeRate: number
@@ -51,29 +48,12 @@ export async function createCAT20BuyOrder(
         supply = supply * 256n
     }
 
-    const { estSendTxVSize } = estimateSendTxVSize(
-        buy.bindToUtxo({
-            ...getDummyUtxo(changeAddress),
-            script: undefined,
-        }),
-        supply,
-        changeAddress
-    )
-
-    const total = feeRate * estSendTxVSize + Number(supply)
-    const utxos = await utxoProvider.getUtxos(changeAddress, { total })
+    const utxos = await utxoProvider.getUtxos(changeAddress)
     if (utxos.length === 0) {
         throw new Error('Insufficient satoshis input amount')
     }
 
-    const sendPsbt = buildSendTx(
-        buy,
-        supply,
-        utxos,
-        changeAddress,
-        feeRate,
-        estSendTxVSize
-    )
+    const sendPsbt = buildSendTx(buy, supply, utxos, changeAddress, feeRate)
 
     // sign the psbts
     const [signedSendPsbt] = await signer.signPsbts([
@@ -84,7 +64,7 @@ export async function createCAT20BuyOrder(
     ])
     const sendTx = await sendPsbt
         .combine(Psbt.fromHex(signedSendPsbt))
-        .finalizeAllInputsAsync()
+        .finalizeAllInputs()
     const subContract = buy.getSubContract() as CAT20Buy
     await chainProvider.broadcast(sendTx.extractTransaction().toHex())
     const orderInfo = {
@@ -102,35 +82,18 @@ export function buildSendTx(
     buySatoshi: bigint,
     feeUtxos: UTXO[],
     changeAddress: string,
-    feeRate: number,
-    estimatedVSize?: number
+    feeRate: number
 ) {
     if (feeUtxos.length > 1) {
         throw new Error('Only one fee input is allowed in the guard tx')
     }
-    const sendTx = new CatPsbt()
-        .addFeeInputs(feeUtxos)
+    const sendTx = new ExtPsbt({
+        forceAddStateRootHashOutput: true,
+    })
+        .spendUTXO(feeUtxos)
         .addCovenantOutput(buy, Number(buySatoshi))
-        .change(changeAddress, feeRate, estimatedVSize)
-
+        .change(changeAddress, feeRate)
     buy.bindToUtxo(sendTx.getUtxo(1))
+    sendTx.seal()
     return sendTx
-}
-
-export function estimateSendTxVSize(
-    buy: CAT20BuyCovenant,
-    buySatoshi: bigint,
-    changeAddress: string
-) {
-    const dummySendPsbt = buildSendTx(
-        buy,
-        buySatoshi,
-        getDummyUtxos(changeAddress, 1),
-        changeAddress,
-        1
-    )
-    return {
-        dummySendPsbt: dummySendPsbt,
-        estSendTxVSize: dummySendPsbt.estimateVSize(),
-    }
 }

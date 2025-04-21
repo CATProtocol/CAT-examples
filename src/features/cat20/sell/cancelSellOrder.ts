@@ -1,25 +1,45 @@
 import {
-    CAT20Covenant,
-    Cat20GuardCovenant,
-    Cat20Utxo,
-    CatPsbt,
+    ByteString,
     ChainProvider,
-    DUST_LIMIT,
-    GuardType,
-    MAX_INPUT,
-    Postage,
+    ExtPsbt,
+    fill,
+    FixedArray,
+    getBackTraceInfo,
+    hash160,
+    Int32,
+    PubKey,
+    PubKeyHash,
+    Sig,
     Signer,
-    TracedCat20Token,
+    STATE_OUTPUT_COUNT_MAX,
+    toByteString,
+    TX_INPUT_COUNT_MAX,
+    TxUtils,
+    uint8ArrayToHex,
+    UTXO,
     UtxoProvider,
-    getDummyUtxo,
-    getDummyUtxos,
+} from '@scrypt-inc/scrypt-ts-btc'
+import { CAT20SellCovenant } from '../../../covenants/cat20/cat20SellCovenant'
+import {
+    CAT20,
+    CAT20Covenant,
+    CAT20Guard,
+    CAT20GuardCovenant,
+    CAT20State,
+    CAT20Utxo,
+    catToXOnly,
+    emptyOutputByteStrings,
     isP2TR,
     pickLargeFeeUtxo,
+    Postage,
+    pubKeyPrefix,
+    satoshiToHex,
     toTokenAddress,
-} from '@cat-protocol/cat-sdk'
-import { CAT20SellCovenant } from '../../../covenants/cat20/cat20SellCovenant'
-import { UTXO } from 'scrypt-ts'
-import { Psbt } from 'bitcoinjs-lib'
+    TracedCAT20Token,
+} from '@cat-protocol/cat-sdk-v2'
+import { Psbt } from '@scrypt-inc/bitcoinjs-lib'
+import { CAT20Sell } from '../../../contracts/cat20/cat20Sell'
+import { createTransferGuard } from '../../../lib/guardUtils'
 
 /**
  * cancel sell CAT20, and transfer back to owner
@@ -38,7 +58,7 @@ export async function cancelCAT20SellOrder(
     cat20SellCovenant: CAT20SellCovenant,
     utxoProvider: UtxoProvider,
     chainProvider: ChainProvider,
-    sellCAT20Utxo: Cat20Utxo,
+    sellCAT20Utxo: CAT20Utxo,
     feeRate: number
 ) {
     const pubkey = await signer.getPublicKey()
@@ -53,7 +73,7 @@ export async function cancelCAT20SellOrder(
     )
     const inputTokens = tracableTokens.map((token) => token.token)
 
-    const { guard, outputTokens } = CAT20Covenant.createTransferGuard(
+    const { guard, outputTokens } = createTransferGuard(
         inputTokens.map((token, i) => ({
             token,
             inputIndex: i + 1,
@@ -66,44 +86,20 @@ export async function cancelCAT20SellOrder(
             },
         ]
     )
-    const { estGuardTxVSize, dummyGuardPsbt } = estimateGuardTxVSize(
-        guard.bindToUtxo({ ...getDummyUtxo(changeAddress), script: undefined }),
-        cat20SellCovenant.bindToUtxo({
-            ...getDummyUtxo(changeAddress),
-            script: undefined,
-        }),
-        changeAddress
-    )
 
-    const estSendTxVSize = estimateSentTxVSize(
-        tracableTokens,
-        guard,
-        cat20SellCovenant,
-        dummyGuardPsbt,
-        address,
-        pubkey,
-        outputTokens,
-        changeAddress,
-        feeRate
-    )
-
-    const total =
-        feeRate * (estGuardTxVSize + estSendTxVSize) + Postage.TOKEN_POSTAGE // for a token change output
-    const utxos = await utxoProvider.getUtxos(changeAddress, { total })
+    const utxos = await utxoProvider.getUtxos(changeAddress)
 
     if (utxos.length === 0) {
         throw new Error('Insufficient satoshis input amount')
     }
 
     const feeUtxo = pickLargeFeeUtxo(utxos)
-
     const guardPsbt = buildGuardTx(
         guard,
         cat20SellCovenant,
         [feeUtxo],
         changeAddress,
-        feeRate,
-        estGuardTxVSize
+        feeRate
     )
 
     const sendPsbt = buildSendTx(
@@ -115,8 +111,7 @@ export async function cancelCAT20SellOrder(
         pubkey,
         outputTokens,
         changeAddress,
-        feeRate,
-        estSendTxVSize
+        feeRate
     )
 
     // sign the psbts
@@ -134,10 +129,10 @@ export async function cancelCAT20SellOrder(
     // combine and finalize the psbts
     const guardTx = await guardPsbt
         .combine(Psbt.fromHex(signedGuardPsbt))
-        .finalizeAllInputsAsync()
+        .finalizeAllInputs()
     const sendTx = await sendPsbt
         .combine(Psbt.fromHex(signedSendPsbt))
-        .finalizeAllInputsAsync()
+        .finalizeAllInputs()
 
     // broadcast the transactions
     await chainProvider.broadcast(guardTx.extractTransaction().toHex())
@@ -146,76 +141,46 @@ export async function cancelCAT20SellOrder(
 }
 
 function buildGuardTx(
-    guard: Cat20GuardCovenant,
+    guard: CAT20GuardCovenant,
     cat20Sell: CAT20SellCovenant,
     feeUtxos: UTXO[],
     changeAddress: string,
-    feeRate: number,
-    estimatedVSize?: number
+    feeRate: number
 ) {
     if (feeUtxos.length > 1) {
         throw new Error('Only one fee input is allowed in the guard tx')
     }
 
-    const totalIn = feeUtxos.reduce(
-        (acc, utxo) => acc + BigInt(utxo.satoshis),
-        0n
-    )
-
-    if (totalIn < Postage.GUARD_POSTAGE + feeRate * (estimatedVSize || 1)) {
-        throw new Error('Insufficient satoshis input amount')
-    }
-
-    const guardTx = new CatPsbt()
-        .addFeeInputs(feeUtxos)
+    const guardTx = new ExtPsbt()
+        .spendUTXO(feeUtxos)
         .addCovenantOutput(guard, Postage.GUARD_POSTAGE)
         .addCovenantOutput(cat20Sell, Postage.TOKEN_POSTAGE)
-        .change(changeAddress, feeRate, estimatedVSize)
-
+        .change(changeAddress, feeRate)
+        .seal()
     guard.bindToUtxo(guardTx.getUtxo(1))
-
     return guardTx
 }
 
-function estimateGuardTxVSize(
-    guard: Cat20GuardCovenant,
-    cat20Sell: CAT20SellCovenant,
-    changeAddress: string
-) {
-    const dummyGuardPsbt = buildGuardTx(
-        guard,
-        cat20Sell,
-        getDummyUtxos(changeAddress, 1),
-        changeAddress,
-        DUST_LIMIT
-    )
-    return {
-        dummyGuardPsbt,
-        estGuardTxVSize: dummyGuardPsbt.estimateVSize(),
-    }
-}
-
 function buildSendTx(
-    tracableTokens: TracedCat20Token[],
-    guard: Cat20GuardCovenant,
+    tracableTokens: TracedCAT20Token[],
+    guard: CAT20GuardCovenant,
     cat20Sell: CAT20SellCovenant,
-    guardPsbt: CatPsbt,
+    guardPsbt: ExtPsbt,
     address: string,
     pubKey: string,
     outputTokens: (CAT20Covenant | undefined)[],
     changeAddress: string,
-    feeRate: number,
-    estimatedVSize?: number
+    feeRate: number
 ) {
     const inputTokens = tracableTokens.map((token) => token.token)
 
-    if (inputTokens.length + 2 > MAX_INPUT) {
+    if (inputTokens.length + 2 > TX_INPUT_COUNT_MAX) {
         throw new Error(
-            `Too many inputs that exceed the maximum input limit of ${MAX_INPUT}`
+            `Too many inputs that exceed the maximum input limit of ${TX_INPUT_COUNT_MAX}`
         )
     }
 
-    const sendPsbt = new CatPsbt()
+    const sendPsbt = new ExtPsbt()
 
     // add token outputs
     for (const outputToken of outputTokens) {
@@ -229,69 +194,120 @@ function buildSendTx(
     for (const inputToken of inputTokens) {
         sendPsbt.addCovenantInput(inputToken)
     }
-
     sendPsbt
-        .addCovenantInput(guard, GuardType.Transfer)
-        .addFeeInputs([guardPsbt.getUtxo(3)])
-        .change(changeAddress, feeRate, estimatedVSize)
-
-    const inputCtxs = sendPsbt.calculateInputCtxs()
+        .addCovenantInput(guard)
+        .spendUTXO([guardPsbt.getUtxo(3)])
+        .change(changeAddress, feeRate)
     const guardInputIndex = inputTokens.length + 1
     // unlock cat20sell
-    sendPsbt.updateCovenantInput(
-        0,
-        cat20Sell,
-        cat20Sell.cancel(0, inputCtxs, isP2TR(address), pubKey)
-    )
+    sendPsbt.updateCovenantInput(0, cat20Sell, {
+        invokeMethod: (contract: CAT20Sell, curPsbt: ExtPsbt) => {
+            contract.take(
+                1n,
+                0n,
+                0n,
+                PubKeyHash('00'),
+                satoshiToHex(BigInt(Postage.TOKEN_POSTAGE)),
+                true,
+                isP2TR(address) ? '' : pubKeyPrefix(pubKey),
+                catToXOnly(pubKey, isP2TR(address)) as PubKey,
+                curPsbt.getSig(0, {
+                    publicKey: pubKey,
+                }) as Sig,
+                {
+                    satoshis: TxUtils.ZERO_SATS,
+                    script: '',
+                }
+            )
+        },
+    })
     // unlock tokens
     for (let i = 1; i < inputTokens.length + 1; i++) {
-        sendPsbt.updateCovenantInput(
-            i,
-            inputTokens[i - 1],
-            inputTokens[i - 1].contractSpend(
-                i,
-                inputCtxs,
-                tracableTokens[i - 1].trace,
-                guard.getGuardInfo(guardInputIndex, guardPsbt.toTxHex()),
-                0
-            )
-        )
+        sendPsbt.updateCovenantInput(i, inputTokens[i - 1], {
+            invokeMethod: (contract: CAT20) => {
+                const contractHash = contract.state.ownerAddr
+                const contractInputIndexVal =
+                    contract.ctx.spentScripts.findIndex(
+                        (v) => hash160(v) === contractHash
+                    )
+                contract.unlock(
+                    {
+                        userPubKeyPrefix: toByteString(''),
+                        userXOnlyPubKey: toByteString('') as PubKey,
+                        userSig: toByteString('') as Sig,
+                        contractInputIndexVal: BigInt(contractInputIndexVal),
+                    },
+                    guard.state,
+                    BigInt(guardInputIndex),
+                    getBackTraceInfo(
+                        tracableTokens[i - 1].trace.prevTxHex,
+                        tracableTokens[i - 1].trace.prevPrevTxHex,
+                        tracableTokens[i - 1].trace.prevTxInput
+                    )
+                )
+            },
+        })
     }
 
-    // unlock guard
-    sendPsbt.updateCovenantInput(
-        guardInputIndex,
-        guard,
-        guard.transfer(
-            guardInputIndex,
-            inputCtxs,
-            outputTokens,
-            guardPsbt.toTxHex()
-        )
+    const cat20StateArray = fill<CAT20State, typeof TX_INPUT_COUNT_MAX>(
+        { ownerAddr: toByteString(''), amount: 0n },
+        TX_INPUT_COUNT_MAX
     )
-    return sendPsbt
-}
+    inputTokens.forEach((value, index) => {
+        if (value) {
+            cat20StateArray[index + 1] = value.state
+        }
+    })
+    // unlock guard
+    sendPsbt
+        .updateCovenantInput(guardInputIndex, guard, {
+            invokeMethod: (contract: CAT20Guard, curPsbt: ExtPsbt) => {
+                const tokenOwners = outputTokens.map(
+                    (output) => output?.state!.ownerAddr || ''
+                )
+                const tokenAmounts = outputTokens.map(
+                    (output) => output?.state!.amount || 0n
+                )
+                const tokenScriptIndexArray = fill(-1n, STATE_OUTPUT_COUNT_MAX)
+                outputTokens.forEach((value, index) => {
+                    if (value) {
+                        tokenScriptIndexArray[index] = 0n
+                    }
+                })
 
-function estimateSentTxVSize(
-    tracableTokens: TracedCat20Token[],
-    guard: Cat20GuardCovenant,
-    cat20Sell: CAT20SellCovenant,
-    guardPsbt: CatPsbt,
-    address: string,
-    pubKey: string,
-    outputTokens: CAT20Covenant[],
-    changeAddress: string,
-    feeRate: number
-) {
-    return buildSendTx(
-        tracableTokens,
-        guard,
-        cat20Sell,
-        guardPsbt,
-        address,
-        pubKey,
-        outputTokens,
-        changeAddress,
-        feeRate
-    ).estimateVSize()
+                const outputSatoshisList = curPsbt.getOutputSatoshisList()
+                const outputSatoshis = emptyOutputByteStrings().map(
+                    (emtpyStr, i) => {
+                        if (outputSatoshisList[i + 1]) {
+                            return outputSatoshisList[i + 1]
+                        } else {
+                            return emtpyStr
+                        }
+                    }
+                ) as FixedArray<ByteString, typeof STATE_OUTPUT_COUNT_MAX>
+
+                contract.unlock(
+                    tokenOwners.map((ownerAddr, oidx) => {
+                        const output = curPsbt.txOutputs[oidx + 1]
+                        return (
+                            ownerAddr ||
+                            (output ? uint8ArrayToHex(output.script) : '')
+                        )
+                    }) as unknown as FixedArray<
+                        ByteString,
+                        typeof STATE_OUTPUT_COUNT_MAX
+                    >,
+                    tokenAmounts as unknown as FixedArray<
+                        Int32,
+                        typeof STATE_OUTPUT_COUNT_MAX
+                    >,
+                    tokenScriptIndexArray,
+                    outputSatoshis,
+                    cat20StateArray,
+                    BigInt(curPsbt.txOutputs.length - 1)
+                )
+            },
+        })
+        .seal()
+    return sendPsbt
 }

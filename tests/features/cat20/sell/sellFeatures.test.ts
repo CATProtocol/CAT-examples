@@ -2,55 +2,37 @@ import * as dotenv from 'dotenv'
 dotenv.config()
 import { expect, use } from 'chai'
 import chaiAsPromised from 'chai-as-promised'
-import { Ripemd160 } from 'scrypt-ts'
-import {
-    CAT20Covenant,
-    CAT20Proto,
-    Cat20MinterUtxo,
-    Cat20Utxo,
-    CatPsbt,
-    OpenMinterCat20Meta,
-    OpenMinterV2Covenant,
-    OpenMinterV2Proto,
-    Postage,
-    addrToP2trLockingScript,
-    int32,
-    toTokenAddress,
-} from '@cat-protocol/cat-sdk'
-import { FEE_RATE, deployToken, mintToken } from '../openMinterV2.utils'
-import { verifyInputSpent } from '../../../utils/txHelper'
 import { testSigner } from '../../../utils/testSigner'
-import { CAT20Sell } from '../../../../src/contracts/cat20/cat20Sell'
 import { createCAT20SellOrder } from '../../../../src/features/cat20/sell/createSellOrder'
 import { cancelCAT20SellOrder } from '../../../../src/features/cat20/sell/cancelSellOrder'
-import { takeCAT20SellOrder } from '../../../../src/features/cat20/sell/takeSellOrder'
 import {
     testChainProvider,
     testUtxoProvider,
 } from '../../../utils/testProvider'
 import { CAT20SellCovenant } from '../../../../src/covenants/cat20/cat20SellCovenant'
+import {
+    OpenMinterCat20Meta,
+    CAT20Covenant,
+    CAT20Utxo,
+} from '@cat-protocol/cat-sdk-v2'
+import { TestCAT20Generater } from '../../../utils/testCAT20Generater'
+import { loadAllArtifacts } from '../utils'
+import { bvmVerify, Int32 } from '@scrypt-inc/scrypt-ts-btc'
+import { takeCAT20SellOrder } from '../../../../src/features/cat20/sell/takeSellOrder'
 
 use(chaiAsPromised)
 
 describe('Test the features for `CAT20SellCovenant`', () => {
     let address: string
-    let toReceiverAddr: Ripemd160
-
-    let tokenId: string
-    let tokenAddr: string
-    let minterAddr: string
     let metadata: OpenMinterCat20Meta
     let cat20Covenant: CAT20Covenant
-    let cat20UtxoSingle: Cat20Utxo[]
-    let cat20UtxoTwo: Cat20Utxo[]
-
-    let firstMintTx: CatPsbt
-    let secondMintTx: CatPsbt
+    let cat20UtxoSingle: CAT20Utxo[]
+    let cat20UtxoTwo: CAT20Utxo[]
+    let cat20Generater: TestCAT20Generater
 
     before(async () => {
-        CAT20Sell.loadArtifact()
+        loadAllArtifacts()
         address = await testSigner.getAddress()
-        toReceiverAddr = toTokenAddress(address)
         metadata = {
             name: 'c',
             symbol: 'C',
@@ -58,71 +40,20 @@ describe('Test the features for `CAT20SellCovenant`', () => {
             max: 21000000n,
             limit: 1000n,
             premine: 3150000n,
-            preminerAddr: toTokenAddress(address),
-            minterMd5: OpenMinterV2Covenant.LOCKED_ASM_VERSION,
+            minterMd5: '',
         }
-
-        const {
-            tokenId: deployedTokenId,
-            tokenAddr: deployedTokenAddr,
-            minterAddr: deployedMinterAddr,
-            premineTx,
-        } = await deployToken(metadata)
-
-        tokenId = deployedTokenId
-        tokenAddr = deployedTokenAddr
-        minterAddr = deployedMinterAddr
-
-        firstMintTx = premineTx!
-
-        const cat20MinterUtxo: Cat20MinterUtxo = {
-            utxo: {
-                txId: premineTx!.extractTransaction().getId(),
-                outputIndex: 1,
-                script: addrToP2trLockingScript(minterAddr),
-                satoshis: Postage.MINTER_POSTAGE,
-            },
-            txoStateHashes: premineTx!.getTxStatesInfo().txoStateHashes,
-            state: OpenMinterV2Proto.create(
-                addrToP2trLockingScript(tokenAddr),
-                true,
-                8925n
-            ),
-        }
-
-        const { mintTx } = await mintToken(cat20MinterUtxo, tokenId, metadata)
-
-        secondMintTx = mintTx
-
-        cat20Covenant = new CAT20Covenant(minterAddr)
-
-        const premineTokenAmount =
-            metadata.premine * 10n ** BigInt(metadata.decimals)
+        cat20Generater = await TestCAT20Generater.init(metadata)
+        cat20Covenant = new CAT20Covenant(cat20Generater.deployInfo.minterAddr)
 
         cat20UtxoSingle = [
-            {
-                utxo: firstMintTx.getUtxo(3),
-                txoStateHashes: firstMintTx.txState.stateHashList,
-                state: CAT20Proto.create(premineTokenAmount, toReceiverAddr),
-            },
+            await cat20Generater.mintTokenToAddr(address, 1000000n),
         ]
 
         cat20UtxoTwo = [
             // first token utxo
-            {
-                utxo: firstMintTx.getUtxo(3),
-                txoStateHashes: firstMintTx.txState.stateHashList,
-                state: CAT20Proto.create(premineTokenAmount, toReceiverAddr),
-            },
+            await cat20Generater.mintTokenToAddr(address, 1000000n),
             // second token utxo
-            {
-                utxo: secondMintTx.getUtxo(3),
-                txoStateHashes: secondMintTx.txState.stateHashList,
-                state: CAT20Proto.create(
-                    metadata.limit * 10n ** BigInt(metadata.decimals),
-                    toReceiverAddr
-                ),
-            },
+            await cat20Generater.mintTokenToAddr(address, 1000000n),
         ]
     })
 
@@ -238,9 +169,9 @@ describe('Test the features for `CAT20SellCovenant`', () => {
     })
 
     async function testCreateSellOrderResult(
-        cat20Utxos: Cat20Utxo[],
-        sellAmount: int32,
-        price: int32,
+        cat20Utxos: CAT20Utxo[],
+        sellAmount: Int32,
+        price: Int32,
         scalePrice: boolean
     ) {
         const { guardTx, sendTx } = await createCAT20SellOrder(
@@ -252,7 +183,7 @@ describe('Test the features for `CAT20SellCovenant`', () => {
             sellAmount,
             price,
             scalePrice,
-            FEE_RATE
+            1
         )
         // check guard tx
         expect(guardTx).not.to.be.undefined
@@ -262,16 +193,16 @@ describe('Test the features for `CAT20SellCovenant`', () => {
         expect(sendTx.isFinalized).to.be.true
         // verify token input unlock
         for (let i = 0; i < cat20Utxos.length; i++) {
-            expect(verifyInputSpent(sendTx, i)).to.be.true
+            expect(bvmVerify(sendTx, i)).to.be.true
         }
         // verify guard input unlock
-        expect(verifyInputSpent(sendTx, cat20Utxos.length)).to.be.true
+        expect(bvmVerify(sendTx, cat20Utxos.length)).to.be.true
     }
 
     async function testCancelSellOrderResult(
-        cat20Utxos: Cat20Utxo[],
-        sellAmount: int32,
-        price: int32,
+        cat20Utxos: CAT20Utxo[],
+        sellAmount: Int32,
+        price: Int32,
         scalePrice: boolean
     ) {
         const { sendTx, orderInfo } = await createCAT20SellOrder(
@@ -283,18 +214,21 @@ describe('Test the features for `CAT20SellCovenant`', () => {
             sellAmount,
             price,
             scalePrice,
-            FEE_RATE
+            1
         )
         // verify token input unlock
         for (let i = 0; i < cat20Utxos.length; i++) {
-            expect(verifyInputSpent(sendTx, i)).to.be.true
+            expect(bvmVerify(sendTx, i)).to.be.true
         }
         // verify guard input unlock
-        expect(verifyInputSpent(sendTx, cat20Utxos.length)).to.be.true
+        expect(bvmVerify(sendTx, cat20Utxos.length)).to.be.true
         const sellCAT20Utxo = {
-            utxo: sendTx.getUtxo(1),
-            txoStateHashes: sendTx.txState.stateHashList,
-            state: CAT20Proto.create(sellAmount, orderInfo.sellContractAddress),
+            ...sendTx.getUtxo(1),
+            txoStateHashes: sendTx.getTxoStateHashes(),
+            state: {
+                ownerAddr: orderInfo.sellContractAddress,
+                amount: sellAmount,
+            },
         }
         const cat20SellCovenant = new CAT20SellCovenant(
             orderInfo.cat20Script,
@@ -310,20 +244,20 @@ describe('Test the features for `CAT20SellCovenant`', () => {
             testUtxoProvider,
             testChainProvider,
             sellCAT20Utxo,
-            FEE_RATE
+            1
         )
         // verify sell contract cancel unlock
-        expect(verifyInputSpent(cancelSendTx, 0)).to.be.true
+        expect(bvmVerify(cancelSendTx, 0)).to.be.true
         // verify token input unlock
-        expect(verifyInputSpent(cancelSendTx, 1)).to.be.true
+        expect(bvmVerify(cancelSendTx, 1)).to.be.true
         // verify guard input unlock
-        expect(verifyInputSpent(cancelSendTx, 2)).to.be.true
+        expect(bvmVerify(cancelSendTx, 2)).to.be.true
     }
 
     async function testTakeSellOrderAllResult(
-        cat20Utxos: Cat20Utxo[],
-        sellAmount: int32,
-        price: int32,
+        cat20Utxos: CAT20Utxo[],
+        sellAmount: Int32,
+        price: Int32,
         scalePrice: boolean
     ) {
         const { sendTx, orderInfo } = await createCAT20SellOrder(
@@ -335,18 +269,21 @@ describe('Test the features for `CAT20SellCovenant`', () => {
             sellAmount,
             price,
             scalePrice,
-            FEE_RATE
+            1
         )
         // verify token input unlock
         for (let i = 0; i < cat20Utxos.length; i++) {
-            expect(verifyInputSpent(sendTx, i)).to.be.true
+            expect(bvmVerify(sendTx, i)).to.be.true
         }
         // verify guard input unlock
-        expect(verifyInputSpent(sendTx, cat20Utxos.length)).to.be.true
+        expect(bvmVerify(sendTx, cat20Utxos.length)).to.be.true
         const sellCAT20Utxo = {
-            utxo: sendTx.getUtxo(1),
-            txoStateHashes: sendTx.txState.stateHashList,
-            state: CAT20Proto.create(sellAmount, orderInfo.sellContractAddress),
+            ...sendTx.getUtxo(1),
+            txoStateHashes: sendTx.getTxoStateHashes(),
+            state: {
+                ownerAddr: orderInfo.sellContractAddress,
+                amount: sellAmount,
+            },
         }
         const cat20SellCovenant = new CAT20SellCovenant(
             orderInfo.cat20Script,
@@ -367,20 +304,20 @@ describe('Test the features for `CAT20SellCovenant`', () => {
                 script: '',
                 satoshis: '0000000000000000',
             },
-            FEE_RATE
+            1
         )
         // verify sell contract take unlock
-        expect(verifyInputSpent(takeSendTx, 0)).to.be.true
+        expect(bvmVerify(takeSendTx, 0)).to.be.true
         // verify token input unlock
-        expect(verifyInputSpent(takeSendTx, 1)).to.be.true
+        expect(bvmVerify(takeSendTx, 1)).to.be.true
         // verify guard input unlock
-        expect(verifyInputSpent(takeSendTx, 2)).to.be.true
+        expect(bvmVerify(takeSendTx, 2)).to.be.true
     }
 
     async function testTakeSellOrderPartialResult(
-        cat20Utxos: Cat20Utxo[],
-        sellAmount: int32,
-        price: int32,
+        cat20Utxos: CAT20Utxo[],
+        sellAmount: Int32,
+        price: Int32,
         scalePrice: boolean
     ) {
         const { sendTx, orderInfo } = await createCAT20SellOrder(
@@ -392,18 +329,21 @@ describe('Test the features for `CAT20SellCovenant`', () => {
             sellAmount,
             price,
             scalePrice,
-            FEE_RATE
+            1
         )
         // verify token input unlock
         for (let i = 0; i < cat20Utxos.length; i++) {
-            expect(verifyInputSpent(sendTx, i)).to.be.true
+            expect(bvmVerify(sendTx, i)).to.be.true
         }
         // verify guard input unlock
-        expect(verifyInputSpent(sendTx, cat20Utxos.length)).to.be.true
+        expect(bvmVerify(sendTx, cat20Utxos.length)).to.be.true
         const sellCAT20Utxo = {
-            utxo: sendTx.getUtxo(1),
-            txoStateHashes: sendTx.txState.stateHashList,
-            state: CAT20Proto.create(sellAmount, orderInfo.sellContractAddress),
+            ...sendTx.getUtxo(1),
+            txoStateHashes: sendTx.getTxoStateHashes(),
+            state: {
+                ownerAddr: orderInfo.sellContractAddress,
+                amount: sellAmount,
+            },
         }
         const cat20SellCovenant = new CAT20SellCovenant(
             orderInfo.cat20Script,
@@ -426,23 +366,33 @@ describe('Test the features for `CAT20SellCovenant`', () => {
                 script: '',
                 satoshis: '0000000000000000',
             },
-            FEE_RATE
+            1
         )
         // verify sell contract take unlock
-        expect(verifyInputSpent(takeSendTx1, 0)).to.be.true
+        expect(bvmVerify(takeSendTx1, 0)).to.be.true
         // verify token input unlock
-        expect(verifyInputSpent(takeSendTx1, 1)).to.be.true
+        expect(bvmVerify(takeSendTx1, 1)).to.be.true
         // verify guard input unlock
-        expect(verifyInputSpent(takeSendTx1, 2)).to.be.true
+        expect(bvmVerify(takeSendTx1, 2)).to.be.true
         const sellCAT20UtxoTakeChange = {
-            utxo: takeSendTx1.getUtxo(2),
-            txoStateHashes: takeSendTx1.txState.stateHashList,
-            state: CAT20Proto.create(takeChange, orderInfo.sellContractAddress),
+            ...takeSendTx1.getUtxo(2),
+            txoStateHashes: takeSendTx1.getTxoStateHashes(),
+            state: {
+                amount: takeChange,
+                ownerAddr: orderInfo.sellContractAddress,
+            },
         }
+        const cat20SellCovenant2 = new CAT20SellCovenant(
+            orderInfo.cat20Script,
+            orderInfo.recvOutput,
+            orderInfo.sellerAddress,
+            orderInfo.price,
+            orderInfo.scalePrice
+        )
         const { sendTx: takeSendTx2 } = await takeCAT20SellOrder(
             testSigner,
             cat20Covenant,
-            cat20SellCovenant,
+            cat20SellCovenant2,
             testUtxoProvider,
             testChainProvider,
             sellCAT20UtxoTakeChange,
@@ -451,13 +401,13 @@ describe('Test the features for `CAT20SellCovenant`', () => {
                 script: '',
                 satoshis: '0000000000000000',
             },
-            FEE_RATE
+            1
         )
         // verify sell contract take unlock
-        expect(verifyInputSpent(takeSendTx2, 0)).to.be.true
+        expect(bvmVerify(takeSendTx2, 0)).to.be.true
         // verify token input unlock
-        expect(verifyInputSpent(takeSendTx2, 1)).to.be.true
+        expect(bvmVerify(takeSendTx2, 1)).to.be.true
         // verify guard input unlock
-        expect(verifyInputSpent(takeSendTx2, 2)).to.be.true
+        expect(bvmVerify(takeSendTx2, 2)).to.be.true
     }
 })

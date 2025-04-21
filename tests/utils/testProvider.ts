@@ -1,45 +1,48 @@
-import { UTXO } from "scrypt-ts";
-import { Transaction } from "bitcoinjs-lib";
-import { ChainProvider, UtxoProvider, getDummyUtxo } from "@cat-protocol/cat-sdk";
+import { Transaction } from '@scrypt-inc/bitcoinjs-lib'
+import { ChainProvider, UTXO, UtxoProvider } from '@scrypt-inc/scrypt-ts-btc'
+import { getDummyUtxo } from '@cat-protocol/cat-sdk-v2'
 
 export class TestChainProvider implements ChainProvider {
+    private broadcastedTxs: Map<string, string> = new Map()
 
-  private broadcastedTxs: Map<string, string> = new Map()
+    constructor() {}
 
-  constructor() {}
-  getConfirmations(txId: string): Promise<number> {
-    return Promise.resolve(1);
-  }
-
-  async broadcast(txHex: string): Promise<string> {
-    const tx = Transaction.fromHex(txHex)
-    const txId = tx.getId()
-    this.broadcastedTxs.set(txId, txHex)
-    // console.log(`Broadcasted tx with id: ${txId}, hex: ${txHex}`)
-    return txId
-  }
-
-  async getRawTransaction(txId: string): Promise<string> {
-    const txHex = this.broadcastedTxs.get(txId)
-    if (!txHex) {
-      throw new Error(`Can not find the tx with id ${txId}, please broadcast it by using the TestProvider first`)
+    async getFeeRate(): Promise<number> {
+        return 1
     }
-    return txHex
-  }
+
+    getConfirmations(): Promise<number> {
+        return Promise.resolve(1)
+    }
+
+    async broadcast(txHex: string): Promise<string> {
+        const tx = Transaction.fromHex(txHex)
+        const txId = tx.getId()
+        this.broadcastedTxs.set(txId, txHex)
+        return txId
+    }
+
+    async getRawTransaction(txId: string): Promise<string> {
+        const txHex = this.broadcastedTxs.get(txId)
+        if (!txHex) {
+            throw new Error(
+                `Can not find the tx with id ${txId}, please broadcast it by using the TestProvider first`
+            )
+        }
+        return txHex
+    }
 }
 
-
 export class TestUtxoProvider implements UtxoProvider {
-  constructor() {}
-  markSpent(txId: string, vout: number): void {
+    constructor() {}
 
-  }
-  addNewUTXO(utxo: UTXO): void {
-  }
+    markSpent(): void {}
 
-  async getUtxos(address: string, options?: { total?: number; maxCnt?: number }): Promise<UTXO[]> {
-    return Promise.resolve([getDummyUtxo(address)])
-  }
+    addNewUTXO(): void {}
+
+    async getUtxos(address: string): Promise<UTXO[]> {
+        return Promise.resolve([getDummyUtxo(address)])
+    }
 }
 
 export const testChainProvider = new TestChainProvider()

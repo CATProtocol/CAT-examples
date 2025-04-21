@@ -1,21 +1,20 @@
 import {
     ChainProvider,
+    hash160,
+    Int32,
     Signer,
+    uint8ArrayToHex,
     UtxoProvider,
-    Cat20Utxo,
-    toTokenAddress,
-    btc,
-    singleSend,
-    int32,
-} from '@cat-protocol/cat-sdk'
-import { CAT20SellCovenant } from '../../../covenants/cat20/cat20SellCovenant'
-import { CAT20Covenant } from '@cat-protocol/cat-sdk'
-import { hash160 } from 'scrypt-ts'
+} from '@scrypt-inc/scrypt-ts-btc'
 import { CAT20Sell } from '../../../contracts/cat20/cat20Sell'
-
-const toLockingScript = function (address: string): string {
-    return btc.Script.fromAddress(btc.Address.fromString(address)).toHex()
-}
+import {
+    CAT20Covenant,
+    CAT20Utxo,
+    singleSend,
+    toTokenAddress,
+} from '@cat-protocol/cat-sdk-v2'
+import { CAT20SellCovenant } from '../../../covenants/cat20/cat20SellCovenant'
+import { address as Address } from '@scrypt-inc/bitcoinjs-lib'
 
 /**
  * create CAT20 sell order, and send cat20 to sell contract
@@ -34,14 +33,14 @@ export async function createCAT20SellOrder(
     cat20Covenant: CAT20Covenant,
     utxoProvider: UtxoProvider,
     chainProvider: ChainProvider,
-    sellCAT20Utxos: Cat20Utxo[],
-    sellAmount: int32,
+    sellCAT20Utxos: CAT20Utxo[],
+    sellAmount: Int32,
     price: bigint,
     scalePrice: boolean,
     feeRate: number
 ) {
     const address = await signer.getAddress()
-    const userLockingScript = toLockingScript(address)
+    const userLockingScript = uint8ArrayToHex(Address.toOutputScript(address))
     const tokenAddress = toTokenAddress(address)
     const sell = new CAT20SellCovenant(
         cat20Covenant.lockingScriptHex,

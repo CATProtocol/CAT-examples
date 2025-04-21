@@ -1,3 +1,3 @@
-import { DefaultSigner } from "@cat-protocol/cat-sdk";
+import { DefaultSigner } from '@scrypt-inc/scrypt-ts-btc'
 
 export const testSigner = new DefaultSigner()
